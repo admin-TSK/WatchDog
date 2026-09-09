@@ -1,0 +1,21 @@
+# Local installation history and private machine notes
+.local/
+# Generated artifacts
+build/
+dist/
+__pycache__/
+*.py[cod]
+*.dSYM/
+# Runtime state and logs
+state.json
+state.tmp
+installation.json
+*.log
+.env
+.env.*
+# macOS / editors
+.DS_Store
+.AppleDouble
+._*
+.vscode/
+.idea/
