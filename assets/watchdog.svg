@@ -9,5 +9,5 @@
   <text x="240" y="119" fill="#F4F7FA" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="66" font-weight="750" letter-spacing="-2">WatchDog</text>
   <text x="244" y="163" fill="#ADBBC8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="22">Local control for macOS testing.</text>
   <rect x="760" y="54" width="138" height="32" rx="16" fill="#25343E"/>
-  <text x="829" y="76" text-anchor="middle" fill="#B6F36B" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="13" font-weight="600" letter-spacing="1">macOS · v0.1</text>
+  <text x="829" y="76" text-anchor="middle" fill="#B6F36B" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="13" font-weight="600" letter-spacing="1">macOS · v0.2</text>
 </svg>

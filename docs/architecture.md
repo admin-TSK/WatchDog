@@ -12,6 +12,16 @@ flowchart TD
   guard --> state[Root-only undo record]
 ```
 
+## Menu bar event flow
+
+A separate root LaunchDaemon runs `event_bridge.py`. It reads the existing guard log and undo record, checks the guard and its child monitor, and publishes a small JSON snapshot once per second. The existing guard does not need to be restarted to add this companion.
+
+The event reader's code and cursor state are private to root. Its public directory is root-owned mode `0755`, and the snapshot is mode `0644`. Other local users can read the same limited activity feed: event categories, framework executable names or job labels, timestamps, PIDs, and counts. It exposes no original file paths, enrollment information, credentials, or raw error details. The menu bar app runs as the signed-in user and cannot change the guard through this feed.
+
+Only recognized log messages become events. Existing history is imported from at most the last 256 KiB of log data. Up to 100 events remain visible. Native process-stop lines without timestamps are marked “Earlier” when imported; new untimestamped lines use the time the reader observed them. Cursor and event state survive restarts, and log rotation is recognized by file identity or truncation. Historical events are not replayed as new notifications.
+
+The app treats a snapshot older than 12 seconds as unavailable, rather than showing a stale healthy state. Optional notifications require the user's macOS permission. The companion does not detect kernel-level execution denials, retrieve policy names, or observe MDM commands. It reports what WatchDog's own logs confirm.
+
 ## Matching
 
 The permission guard inspects the main Jamf binary, the legacy `jamfAgent` when present, and executables declared in component `Info.plist` files beneath `/Library/Application Support/JAMF/Jamf.app`. It does not modify file contents, certificates, enrollment profiles, or package receipts.
