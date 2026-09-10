@@ -73,9 +73,13 @@ def install():
     (PRIVATE / 'event_bridge.py').chmod(0o600)
     shutil.copyfile(REPO / 'src/processes.py', PRIVATE / 'processes.py')
     (PRIVATE / 'processes.py').chmod(0o600)
+    shutil.copyfile(REPO / 'src/targets.py', PRIVATE / 'targets.py')
+    (PRIVATE / 'targets.py').chmod(0o600)
+    python = str(Path(sys.executable).resolve())
+    manage.write_runner(PRIVATE / 'run-events', 'event_bridge.py', manage.python_fallbacks(python))
     (PRIVATE / 'config.json').write_text(json.dumps(config))
     (PRIVATE / 'config.json').chmod(0o600)
-    data = {'Label': LABEL, 'ProgramArguments': [str(Path(sys.executable).resolve()), '-I', str(PRIVATE / 'event_bridge.py')],
+    data = {'Label': LABEL, 'ProgramArguments': [str(PRIVATE / 'run-events')],
             'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 10, 'ExitTimeOut': 5,
             'ProcessType': 'Background', 'Umask': 0o077,
             'StandardOutPath': '/var/log/watchdog-events.log', 'StandardErrorPath': '/var/log/watchdog-events.log'}
@@ -126,6 +130,10 @@ def stop_app():
 
 def remove():
     command('/bin/launchctl', 'bootout', f'system/{LABEL}', check=False)
+    deadline = time.time() + 15
+    while command('/bin/launchctl', 'print', f'system/{LABEL}', check=False).returncode == 0 and time.time() < deadline:
+        command('/bin/launchctl', 'bootout', f'system/{LABEL}', check=False)
+        time.sleep(0.25)
     if command('/bin/launchctl', 'print', f'system/{LABEL}', check=False).returncode == 0:
         raise RuntimeError('The event reader is still running; removal stopped.')
     stop_app()
@@ -133,7 +141,7 @@ def remove():
         if not known_app(APPLICATION): raise RuntimeError('Refusing to remove a different WatchDog application.')
         shutil.rmtree(APPLICATION)
     PLIST.unlink(missing_ok=True)
-    for name in ('event_bridge.py', 'processes.py', 'config.json', 'feed-state.json', 'feed-state.tmp'):
+    for name in ('event_bridge.py', 'processes.py', 'targets.py', 'run-events', 'config.json', 'feed-state.json', 'feed-state.tmp'):
         (PRIVATE / name).unlink(missing_ok=True)
     if PRIVATE.exists(): PRIVATE.rmdir()
     for name in ('events.json', 'events.tmp'): (PUBLIC / name).unlink(missing_ok=True)

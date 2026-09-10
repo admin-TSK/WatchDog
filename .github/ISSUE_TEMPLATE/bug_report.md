@@ -17,4 +17,4 @@ about: Report unexpected WatchDog behavior
 
 ## Relevant output
 
-Include redacted output from Status.command or the WatchDog log. Remove device identifiers, server names, usernames, and credentials. Do not attach state.json or enrollment profiles.
+Include redacted output from `./scripts/status.sh` or the WatchDog log. Remove device identifiers, server names, usernames, and credentials. Do not attach state.json or enrollment profiles.

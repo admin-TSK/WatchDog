@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-source "$(dirname -- "$0")/common.sh"
+source "$(dirname -- "$0")/scripts/common.sh"
 /bin/bash "$REPO_ROOT/scripts/build.sh"
 /bin/bash "$REPO_ROOT/scripts/build-menubar.sh"
 echo 'Installing WatchDog requires administrator authentication.'

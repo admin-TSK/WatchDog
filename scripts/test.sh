@@ -6,7 +6,8 @@ source "$(dirname -- "$0")/common.sh"
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_manage.py"
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_polling.py"
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_processes.py"
-for script in "$REPO_ROOT"/*.command "$REPO_ROOT"/scripts/*.sh; do /bin/bash -n "$script"; done
+"$PYTHON_BIN" -I "$REPO_ROOT/tests/test_targets.py"
+for script in "$REPO_ROOT"/install.sh "$REPO_ROOT"/uninstall.sh "$REPO_ROOT"/scripts/*.sh; do /bin/bash -n "$script"; done
 
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_events.py"
 /bin/bash "$REPO_ROOT/scripts/build-menubar.sh"

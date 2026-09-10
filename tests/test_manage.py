@@ -1,6 +1,7 @@
 """Lifecycle tests use temporary directories and simulated launchctl responses."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
@@ -24,6 +25,9 @@ class LifecycleTests(unittest.TestCase):
             'LAUNCHDAEMONS': self.root / 'LaunchDaemons',
             'PLIST': self.root / 'LaunchDaemons/local.watchdog.guard.plist',
             'AUDIT_DIR': self.root / 'logs',
+            'NEWSYSLOG': self.root / 'newsyslog.conf',
+            'EVENTS_JSON': self.root / 'events.json',
+            'APPLICATION': self.root / 'WatchDog.app',
         }.items()]
         for p in self.patches: p.start()
         manage.LAUNCHDAEMONS.mkdir()
@@ -48,8 +52,18 @@ class LifecycleTests(unittest.TestCase):
     def test_dynamic_runtime_and_branding(self):
         data = manage.make_plist('/chosen/python3')
         self.assertEqual(data['Label'], 'local.watchdog.guard')
-        self.assertEqual(data['ProgramArguments'][0], '/chosen/python3')
+        self.assertEqual(data['ProgramArguments'], [str(manage.ROOT / 'run-guard')])
         self.assertTrue(data['KeepAlive'])
+        self.assertEqual(manage.python_fallbacks('/chosen/python3')[0], '/chosen/python3')
+        self.assertIn('/usr/bin/python3', manage.python_fallbacks('/chosen/python3'))
+        self.assertTrue(manage.interpreter_volatile('/Library/Frameworks/Python.framework/Versions/3.14/bin/python3'))
+        self.assertFalse(manage.interpreter_volatile('/usr/bin/python3'))
+        runner = self.root / 'run-guard'
+        manage.write_runner(runner, 'guard.py', manage.python_fallbacks('/chosen/python3'))
+        text = runner.read_text()
+        self.assertIn('/chosen/python3', text)
+        self.assertIn('/usr/bin/python3', text)
+        self.assertIn('sys.version_info < (3, 10)', text)
 
     def test_legacy_detection_and_duplicate_install_refusal(self):
         expected = self.fixture(legacy=True)
@@ -67,7 +81,7 @@ class LifecycleTests(unittest.TestCase):
                 self.assertTrue((root / 'state.json').exists())
                 self.assertTrue(plist.exists())
             return subprocess.CompletedProcess(args, 0, '', '')
-        with patch.object(manage, 'service_loaded', side_effect=[True, False]), patch.object(manage, 'run', side_effect=command) as commands:
+        with patch.object(manage, 'service_loaded', side_effect=[True, False, False]), patch.object(manage, 'run', side_effect=command) as commands:
             manage.uninstall()
         self.assertFalse(root.exists())
         self.assertFalse(plist.exists())
@@ -82,6 +96,29 @@ class LifecycleTests(unittest.TestCase):
                 manage.uninstall()
         self.assertTrue((root / 'state.json').exists())
         self.assertTrue(plist.exists())
+
+    def test_status_reports_companion_and_tracked_paths(self):
+        root, plist, label, python = self.fixture()
+        (root / 'state.json').write_text(json.dumps({
+            'version': 2, 'modes': {str(root / 'component'): 0o755}, 'jobs': {'system/com.jamf.management.daemon': {}}, 'flags': {}
+        }))
+        (root / 'component').write_text('x')
+        (root / 'component').chmod(0o644)
+        (root / 'installation.json').write_text(json.dumps({
+            'version': '0.3.0', 'sticky_block': False, 'match_signature': False, 'block_connect': False
+        }))
+        launchctl = subprocess.CompletedProcess([], 0, 'state = running\n pid = 99\n', '')
+        with patch.object(manage, 'run', return_value=launchctl), \
+             patch('os.lstat', wraps=os.lstat), \
+             patch('sys.stdout', new_callable=__import__('io').StringIO) as stdout:
+            manage.status()
+        text = stdout.getvalue()
+        self.assertIn('WatchDog: running', text)
+        self.assertIn('Event reader:', text)
+        self.assertIn('Menu bar app:', text)
+        self.assertIn('Tracked executables: 1', text)
+        self.assertIn('Jamf Connect blocking: False', text)
+        self.assertIn('MDM enrollment is outside WatchDog’s scope.', text)
 
 
 if __name__ == '__main__':

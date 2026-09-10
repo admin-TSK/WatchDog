@@ -2,128 +2,129 @@
 
 # WatchDog
 
-A reversible macOS test utility that blocks the **local Jamf Pro framework** through launch-job controls, executable permissions, and a native process monitor. MDM enrollment stays intact.
+Reversible **local Jamf control** for enrolled macOS test machines. WatchDog can block the Jamf Pro framework, Self Service, and App Installers on the Mac. MDM enrollment stays intact. Jamf Connect blocking is optional and off by default.
 
-**WatchDog is experimental.** It interrupts inventory reporting, policies, and Self Service workflows that depend on the local framework. It does not make the Mac read-only or prevent commands delivered through MDM.
+> **Experimental.** This is a test utility, not a security boundary. It interrupts inventory, policies, Self Service, and App Installers that depend on local binaries. It does not freeze the disk, and it does not stop commands that arrive through MDM. Polling has a CPU cost. It is not kernel execution denial.
 
-## Menu bar companion
-
-**WatchDog.app** lives in the menu bar and shows:
-
-- Live guard, native-monitor, and execution-control status.
-- Recent process stops, permission changes, background-job controls, and action failures.
-- Timestamps and a badge for new activity.
-- Optional macOS notifications, enabled from the panel.
-- An Open at login setting and a JSON activity export.
-
-Click the shield icon to open the panel. **Quit menu bar closes only the interface; protection keeps running.**
-
-For an existing guard installation, add the companion without restarting or changing the guard:
-
-```sh
-./"Install Menu Bar.command"
-```
-
-To remove only the companion:
-
-```sh
-./"Uninstall Menu Bar.command"
-```
-
-The panel shows confirmed WatchDog actions. It does not observe every execution attempt denied by macOS permissions, identify Jamf policy names, or monitor the independent MDM channel. The activity feed keeps the latest 100 events; counters cover log entries observed by the feed reader, not an exhaustive lifetime audit.
-
-## How it works
-
-| Layer | Action | Frequency |
-| --- | --- | --- |
-| Launch jobs | Disable and unload matching Jamf Pro jobs | Approximately every 2 seconds |
-| Executable permissions | Remove execution permission at known framework paths, including replacements | Approximately every 200 ms |
-| Component discovery | Find new declared executable paths inside Jamf.app | Approximately every 2 seconds |
-| Process monitor | Pause and kill matching processes and observable descendants | Approximately every 100 ms |
-| Recovery | Record original file modes and effective job states before modification | Before each first change |
-| Supervision | Restart the monitor if it exits; start the guard at boot | Managed by the guard and launchd |
-
-Polling intervals are targets, not hard deadlines. A process can act before detection. MDM and other root processes can reverse WatchDog’s controls. [Read the boundaries and architecture](docs/architecture.md).
-
-## Requirements
-
-- macOS 14 or later, Apple Silicon or Intel.
-- Python 3.10 or later; only the standard library is used.
-- Xcode Command Line Tools or Xcode for compiling the native monitor.
-- Administrator access to install and remove the service.
-
-The installer records the selected Python executable’s absolute path. That interpreter and its standard library must remain installed for the service to start after reboot. Choose a trusted runtime appropriate for a root service; WatchDog does not bundle Python.
+**0.3.0** · macOS 14+ · independent of Jamf · [changelog](CHANGELOG.md) · [architecture](docs/architecture.md) · [security](SECURITY.md)
 
 ## Quick start
 
-From a clone or extracted source folder:
+Requires a Mac with administrator access, Python 3.10+, and Xcode or the Command Line Tools.
 
 ```sh
-./scripts/test.sh
-./Install.command
-./Status.command
+git clone https://github.com/admin-TSK/WatchDog.git
+cd WatchDog
+./install.sh
+./scripts/status.sh
 ```
 
-You can also double-click the `.command` files in Finder. Installation builds the native executable and menu bar app before requesting administrator authentication. The companion starts for the signed-in user and is configured to open at login. Build artifacts are ad hoc signed locally; they are not notarized.
-
-To select a particular Python interpreter:
+Remove it and restore recorded settings:
 
 ```sh
-WATCHDOG_PYTHON=/absolute/path/to/python3 ./Install.command
+./uninstall.sh
 ```
 
-An existing WatchDog or legacy installation is detected and left in place. The installer refuses to create a second service.
+`./install.sh` builds the native monitor and menu bar app, then prompts for administrator authentication. The guard starts at boot. The menu bar app starts for the signed-in user and opens at login. Binaries are ad hoc signed locally; they are not notarized.
 
-## Remove and restore
+If WatchDog or the older “Jamf Test Blocker” is already installed, uninstall that copy first. A second install is refused.
 
 ```sh
-./Uninstall.command
+WATCHDOG_PYTHON=/absolute/path/to/python3 ./install.sh
 ```
 
-Uninstall stops the guard and monitor, removes the menu bar companion, restores recorded file modes and effective launch-job states, and preserves an audit copy of the undo record in `/var/log`. If restoration fails, recovery files remain available for another attempt.
+Optional flags, all off by default:
 
-The uninstall command also recognizes the original “Jamf Test Blocker” installation. Old state records marked `original_override_unverified` produce a restoration notice; the recorded fallback is used for those jobs. See [restoration details](docs/architecture.md#restoration).
+```sh
+WATCHDOG_STICKY_BLOCK=1 WATCHDOG_MATCH_SIGNATURE=1 ./install.sh
+WATCHDOG_BLOCK_CONNECT=1 ./install.sh   # can lock users out of Connect logins
+```
+
+Read the Connect warning in [SECURITY.md](SECURITY.md) before enabling that flag.
+
+## Scope
+
+| In | Out |
+| --- | --- |
+| Local Jamf Pro framework, including `jamf`, `jamfHelper`, and Management Action | MDM enrollment, profiles, and the MDM command channel |
+| Self Service and Jamf App Installers | Jamf Protect |
+| Optional Jamf Connect app/agents (`WATCHDOG_BLOCK_CONNECT=1`) | Login-window plugins and `authorizationdb` |
+| Reversible undo record of modes, flags, and launch jobs | `jamfcheck`, Jamf Compliance Editor, AppAutoPatch |
+
+Uninstall restores what WatchDog recorded. Root, MDM, or an updater can reverse it while it is installed. Details: [architecture](docs/architecture.md).
+
+## Menu bar
+
+**WatchDog.app** installs with the guard. The shield in the menu bar shows live status, recent actions, an unread badge, optional notifications, login startup, and a JSON export.
+
+Quit the menu bar to close the interface only. Protection keeps running.
+
+The panel reports confirmed WatchDog actions. It does not list every `EACCES` from stripped execute bits, Jamf policy names, or MDM commands. The feed keeps the latest 100 events.
+
+## How it works
+
+| Layer | Action | Interval |
+| --- | --- | --- |
+| Launch jobs | Disable and unload matching Jamf jobs | ~2 s |
+| Permissions | Strip execute bits at known paths, including replacements | ~100 ms |
+| Discovery | Find new executables under Jamf support folders and apps | ~2 s |
+| Process monitor | Pause and kill matching processes, children, and group helpers | ~50 ms |
+| Recovery | Record original modes, flags, and job states | Before each first change |
+| Supervision | Restart the monitor; start the guard at boot | launchd + guard |
+
+Intervals are targets. A process can act first. [Architecture and limits](docs/architecture.md).
+
+## Requirements
+
+- macOS 14 or later, Apple Silicon or Intel
+- Python 3.10 or later (standard library only; WatchDog does not bundle Python)
+- Xcode Command Line Tools or Xcode, to compile the monitor
+- Administrator access
+
+Prefer `/usr/bin/python3` when it is 3.10+. The installer stores a fallback list; `run-guard` uses the first candidate that still exists so a Homebrew or framework upgrade is less likely to leave the LaunchDaemon dead after reboot.
 
 ## Installed files
 
 | Item | Location |
 | --- | --- |
-| Service label | `local.watchdog.guard` |
-| Installed code and undo record | `/Library/Application Support/WatchDog/` |
+| Guard | `local.watchdog.guard` · `/Library/Application Support/WatchDog/` |
 | LaunchDaemon | `/Library/LaunchDaemons/local.watchdog.guard.plist` |
 | Guard log | `/var/log/watchdog.log` |
 | Menu bar app | `/Applications/WatchDog.app` |
-| Event-reader service | `local.watchdog.events` |
-| Private event-reader code/state | `/Library/Application Support/WatchDog Monitor/` |
-| Read-only activity feed | `/Library/Application Support/WatchDog Status/events.json` |
-| Event-reader log | `/var/log/watchdog-events.log` |
-| Per-user login item | `~/Library/LaunchAgents/local.watchdog.menubar.plist` |
+| Event reader | `local.watchdog.events` · `/Library/Application Support/WatchDog Monitor/` |
+| Activity feed | `/Library/Application Support/WatchDog Status/events.json` |
+| Event log | `/var/log/watchdog-events.log` |
+| Log rotation | `/etc/newsyslog.d/local.watchdog.conf` |
+| Login item | `~/Library/LaunchAgents/local.watchdog.menubar.plist` |
 
-The repository can be moved after installation. The running service uses its own installed copy. Changes to source do not update an existing service automatically.
+The clone can move after install. The service runs from the copy under `/Library`. Changing source does not update an installed service.
+
+`./uninstall.sh` also recognizes the original Jamf Test Blocker. Records marked `original_override_unverified` restore using the recorded fallback. [Restoration](docs/architecture.md#restoration).
 
 ## Development
 
 ```sh
-./scripts/build.sh  # Universal native executable in build/watchdog
-./scripts/test.sh   # Isolated tests; no administrator access
+./scripts/build.sh   # universal monitor → build/watchdog
+./scripts/test.sh    # isolated tests; no administrator access
+./scripts/status.sh  # inspect a live install
 ```
 
-Tests use disposable executables, temporary files, and simulated launchctl responses. They never install WatchDog or intentionally change the real Jamf framework. The GitHub Actions workflow runs these checks on macOS. [Testing and release notes](docs/testing.md).
+Tests use temporary fixtures and mocked `launchctl`. They never install WatchDog or change the live Jamf framework. CI runs the same checks on macOS. [Testing](docs/testing.md) · [contributing](CONTRIBUTING.md)
 
 ```text
 WatchDog/
-├── src/          # Python guard/event reader, native C monitor, Swift menu bar app
-├── scripts/      # Build, test, install, uninstall, and status entry points
-├── tests/        # Isolated process and restoration checks
-├── assets/       # WatchDog branding
-├── docs/         # Architecture, limits, and testing
-└── .github/      # macOS CI and contribution templates
+├── install.sh      # build and install
+├── uninstall.sh    # restore and remove
+├── src/            # guard, event reader, C monitor, Swift menu bar
+├── scripts/        # build, test, status
+├── tests/
+├── assets/
+├── docs/
+└── .github/
 ```
 
-Runtime state, logs, build products, and local migration notes are excluded from Git. No credentials or server configuration are needed in this repository.
+`.gitignore` excludes build products, logs, runtime state, and `.local/` machine notes. This repository has no credentials or server config.
 
-## Project status
+## License
 
-Version **0.2.0**. This project is independent of Jamf and is not a Jamf-supported management mode. See [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [SECURITY.md](SECURITY.md).
-
-No open-source license has been selected. See [LICENSE-NOTICE.md](LICENSE-NOTICE.md).
+No open-source license has been selected. Cloning this private repository does not grant a right to reuse or redistribute it. See [LICENSE-NOTICE.md](LICENSE-NOTICE.md).

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 — 2026-09-10
+
+- Unified path, launch-job, and signing matches in `src/targets.py`, kept in parity with the native monitor.
+- Widened coverage from `Jamf.app/` to `/Library/Application Support/JAMF/` so `jamfHelper` and Management Action are blocked, plus Self Service and App Installers.
+- Optional Jamf Connect blocking (`WATCHDOG_BLOCK_CONNECT`) with a login-lockout warning; never rewrites authorizationdb or login-window plugins.
+- Optional sticky `UF_IMMUTABLE` block (`WATCHDOG_STICKY_BLOCK`) and signature-aware process matching (`WATCHDOG_MATCH_SIGNATURE`), both off by default.
+- Process monitor also selects observed process-group members after a parent is paused, catching reparented helpers. Only a group whose leader is the matched process is followed, so an inherited parent group (shells, the test runner) is left alone.
+- Default permission polling 100 ms and monitor polling 50 ms, configurable in `installation.json`.
+- Interpreter fallback runner so a missing install-time Python does not silently disable the LaunchDaemon after reboot.
+- Guard monitor spawn backs off on failure instead of crash-looping; event reader can re-bootstrap a down guard at most once per minute.
+- Status reports the monitor, event reader, menu bar, every tracked path, and activity-snapshot age.
+- Log rotation via `/etc/newsyslog.d/local.watchdog.conf`.
+- Replaced Finder `.command` wrappers with `./install.sh` and `./uninstall.sh`. The menu bar companion installs and removes with those scripts.
+
 ## 0.2.2 — 2026-09-10
 
 - Resolve historical session timeouts only after the guard confirms a successful native session lookup.

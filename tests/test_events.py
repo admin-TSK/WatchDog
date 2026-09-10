@@ -86,6 +86,9 @@ class EventTests(unittest.TestCase):
         self.assertNotIn('/private', str(event))
         self.assertIsNone(events.parse_event('secret unrelated log line', 'b', 42))
         self.assertIsNone(events.parse_event('Launch job disabled: system/unrelated.job', 'c', 42))
+        self.assertIsNone(events.parse_event('Launch job disabled: system/com.jamf.protect.agent', 'p', 42))
+        connect = events.parse_event('Launch job disabled: gui/501/com.jamf.connect.useragent', 'e', 42)
+        self.assertEqual(connect['detail'], 'com.jamf.connect.useragent')
         error = events.parse_event('PROTECTION ERROR: secret private path', 'd', 42)
         self.assertNotIn('secret', str(error))
 
@@ -112,5 +115,17 @@ class EventTests(unittest.TestCase):
             path.write_text('Execution blocked: /example/JamfAgent\n')
             restored.read(path, 45)
             self.assertEqual(restored.action_total, 3)
+
+    def test_heal_guard_is_rate_limited(self):
+        config = {'guard_label': 'test.guard'}
+        with patch.object(events.subprocess, 'run') as command, patch.object(Path, 'exists', return_value=True):
+            stamp, attempted = events.heal_guard(config, 100, 90, minimum=60)
+            self.assertFalse(attempted)
+            self.assertEqual(stamp, 90)
+            command.assert_not_called()
+            stamp, attempted = events.heal_guard(config, 160, 90, minimum=60)
+            self.assertTrue(attempted)
+            self.assertEqual(stamp, 160)
+            self.assertEqual(command.call_args.args[0][1], 'bootstrap')
 
 if __name__ == '__main__': unittest.main()

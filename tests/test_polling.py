@@ -86,7 +86,7 @@ class PollingTests(unittest.TestCase):
                     self.assertFalse(release.is_set())
                     self.assertEqual(binary.read_text(), 'updated')
                     self.assertGreaterEqual(len(cycles), 2)
-                    self.assertEqual(guard.PERMISSION_INTERVAL, 0.2)
+                    self.assertEqual(guard.PERMISSION_INTERVAL, 0.1)
                     release.set()
                     self.assertTrue(timeout_logged.wait(1))
                     binary.chmod(0o755)

@@ -1,37 +1,96 @@
 #!/usr/bin/env python3
-"""WatchDog: reversible Jamf Pro framework controls; does not alter MDM enrollment."""
+"""WatchDog: reversible Jamf local-component controls; does not alter MDM enrollment."""
 import json, os, plistlib, re, signal, stat, subprocess, sys, threading, time
 from pathlib import Path
 
-# Resolve the root-owned sibling explicitly; isolated Python excludes script paths.
 import importlib.util
-import sys
 sys.dont_write_bytecode = True
-_process_spec = importlib.util.spec_from_file_location('watchdog_processes', Path(__file__).with_name('processes.py'))
-processes = importlib.util.module_from_spec(_process_spec)
-_process_spec.loader.exec_module(processes)
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(f'watchdog_{name}', Path(__file__).with_name(f'{name}.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+processes = _load('processes')
+targets = _load('targets')
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / 'state.json'
-APP = Path('/Library/Application Support/JAMF/Jamf.app')
-PERMISSION_INTERVAL = 0.2
+CONFIG_PATH = ROOT / 'installation.json'
+PERMISSION_INTERVAL = 0.1
 BACKGROUND_INTERVAL = 2.0
+MONITOR_INTERVAL_MS = 50
+STATE_VERSION = 2
+UF_IMMUTABLE = getattr(stat, 'UF_IMMUTABLE', 0x00000002)
 STATE_LOCK = threading.RLock()
-BASE_EXECUTABLES = {Path('/usr/local/jamf/bin/jamf'), Path('/usr/local/jamf/bin/jamfAgent')}
+BASE_EXECUTABLES = {Path(p) for p in targets.EXACT_PATHS}
 SESSION_LOOKUP_HEALTHY = False
+CONFIG = {
+    'permission_interval': PERMISSION_INTERVAL,
+    'background_interval': BACKGROUND_INTERVAL,
+    'monitor_interval_ms': MONITOR_INTERVAL_MS,
+    'sticky_block': False,
+    'match_signature': False,
+    'block_connect': False,
+}
 
 def log(message):
     print(time.strftime('%Y-%m-%d %H:%M:%S'), message, flush=True)
 
+def load_config():
+    config = dict(CONFIG)
+    if not CONFIG_PATH.exists():
+        return config
+    try:
+        data = json.loads(CONFIG_PATH.read_text())
+    except (OSError, ValueError):
+        return config
+    for key, cast in (('permission_interval', float), ('background_interval', float),
+                      ('monitor_interval_ms', int), ('sticky_block', bool),
+                      ('match_signature', bool), ('block_connect', bool)):
+        if key in data:
+            try:
+                config[key] = cast(data[key])
+            except (TypeError, ValueError):
+                pass
+    if config['permission_interval'] < 0.05:
+        config['permission_interval'] = 0.05
+    if config['background_interval'] < 0.5:
+        config['background_interval'] = 0.5
+    config['monitor_interval_ms'] = max(1, min(2000, int(config['monitor_interval_ms'])))
+    return config
+
+def apply_config(config):
+    global PERMISSION_INTERVAL, BACKGROUND_INTERVAL, MONITOR_INTERVAL_MS, CONFIG
+    CONFIG = config
+    PERMISSION_INTERVAL = config['permission_interval']
+    BACKGROUND_INTERVAL = config['background_interval']
+    MONITOR_INTERVAL_MS = config['monitor_interval_ms']
+
 def load_state():
     if STATE.exists():
-        return json.loads(STATE.read_text())
-    return {'version': 1, 'modes': {}, 'jobs': {}}
+        try:
+            state = json.loads(STATE.read_text())
+        except (OSError, ValueError):
+            state = {}
+    else:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault('modes', {})
+    state.setdefault('jobs', {})
+    state.setdefault('flags', {})
+    if not isinstance(state['flags'], dict):
+        state['flags'] = {}
+    state['version'] = STATE_VERSION
+    return state
 
 def save_state(state):
     # Both loops journal before changing controls. Never hold this lock across
     # a subprocess or filesystem discovery scan.
     with STATE_LOCK:
+        state['version'] = STATE_VERSION
         tmp = STATE.with_suffix('.tmp')
         with open(tmp, 'w') as f:
             os.chmod(tmp, 0o600)
@@ -46,22 +105,18 @@ def command(*args):
                           stderr=subprocess.PIPE, timeout=10)
 
 def executables():
-    paths = set(BASE_EXECUTABLES)
-    if APP.exists():
-        for folder, dirs, files in os.walk(APP, followlinks=False):
-            dirs[:] = [d for d in dirs if not (Path(folder) / d).is_symlink()]
-            if 'Info.plist' not in files or Path(folder).name != 'Contents':
-                continue
-            try:
-                with open(Path(folder) / 'Info.plist', 'rb') as f:
-                    executable = plistlib.load(f).get('CFBundleExecutable', '')
-                if executable and '/' not in executable and executable not in ('.', '..'):
-                    paths.add(Path(folder) / 'MacOS' / executable)
-            except (OSError, ValueError, plistlib.InvalidFileException) as e:
-                log(f'Cannot inspect {folder}: {e}')
-    return sorted(paths)
+    return targets.executables(block_connect=CONFIG['block_connect'])
 
-def block_modes(state, paths):
+def _file_flags(info):
+    return int(getattr(info, 'st_flags', 0))
+
+def _set_flags(path, flags):
+    setter = getattr(os, 'lchflags', None) or os.chflags
+    setter(path, flags)
+
+def block_modes(state, paths, sticky=None):
+    if sticky is None:
+        sticky = CONFIG['sticky_block']
     failures = []
     for path in paths:
         try:
@@ -69,6 +124,8 @@ def block_modes(state, paths):
         except FileNotFoundError:
             continue
         except OSError as e:
+            if e.errno == 62:  # ELOOP: symlink; the real file is listed separately.
+                continue
             failures.append(f'{path}: {e}')
             continue
         try:
@@ -76,16 +133,35 @@ def block_modes(state, paths):
             if not stat.S_ISREG(info.st_mode):
                 raise RuntimeError('Target is not a regular file')
             mode = stat.S_IMODE(info.st_mode)
+            flags = _file_flags(info)
+            key = str(path)
+            mutated = False
             if mode & 0o111:
-                key = str(path)
                 with STATE_LOCK:
                     if key not in state['modes']:
                         state['modes'][key] = mode
-                        save_state(state)  # Durable undo record before mutation.
+                    if sticky and key not in state['flags']:
+                        state['flags'][key] = flags
+                    save_state(state)
+                if flags & UF_IMMUTABLE:
+                    _set_flags(path, flags & ~UF_IMMUTABLE)
                 os.fchmod(fd, mode & ~0o111)
                 if stat.S_IMODE(os.fstat(fd).st_mode) & 0o111:
                     raise RuntimeError('Execution permission was not removed')
                 log(f'Execution blocked: {path}')
+                mutated = True
+                flags = _file_flags(os.fstat(fd))
+            if sticky:
+                with STATE_LOCK:
+                    if key not in state['flags']:
+                        state['flags'][key] = flags & ~UF_IMMUTABLE if mutated else flags
+                        if key not in state['modes']:
+                            state['modes'][key] = mode & ~0o111
+                        save_state(state)
+                current = _file_flags(os.fstat(fd))
+                if current & UF_IMMUTABLE == 0:
+                    _set_flags(path, current | UF_IMMUTABLE)
+                    log(f'Sticky block applied: {path}')
         except Exception as e:
             failures.append(f'{path}: {e}')
         finally:
@@ -93,10 +169,7 @@ def block_modes(state, paths):
     return failures
 
 def job_label(label):
-    return (label.startswith('com.jamfsoftware.task.') or
-            label in {'com.jamf.management.daemon', 'com.jamf.management.agent',
-                      'com.jamf.management.service', 'com.jamf.management.login',
-                      'com.jamfsoftware.startupItem', 'com.jamfsoftware.jamf.daemon'})
+    return targets.job_label(label, block_connect=CONFIG['block_connect'])
 
 def jobs():
     global SESSION_LOOKUP_HEALTHY
@@ -163,10 +236,14 @@ def block_jobs(state):
 
 def restore_modes(state):
     failures = []
+    flags_map = state.get('flags') or {}
     for path, mode in state['modes'].items():
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             try:
+                if path in flags_map:
+                    _set_flags(path, int(flags_map[path]))
+                    log(f'Original flags restored: {path}')
                 os.fchmod(fd, mode)
                 log(f'Original permissions restored: {path}')
             finally:
@@ -238,14 +315,28 @@ def run_permission_checks(state, background, stop_event, supervise=lambda: None)
                 log('PROTECTION ERROR: ' + failure)
         except Exception as error:
             log('PROTECTION ERROR: Permission check: ' + repr(error))
-        # Account for work time instead of adding a fixed sleep after each pass.
         stop_event.wait(max(0, PERMISSION_INTERVAL - (time.monotonic() - started)))
+
+
+def monitor_command():
+    executable = ROOT / 'watchdog'
+    if not executable.exists():
+        executable = ROOT / 'jamf-test-blocker'
+    if not executable.exists():
+        return None, []
+    args = [str(executable), '--interval-ms', str(int(MONITOR_INTERVAL_MS))]
+    if CONFIG['match_signature']:
+        args.append('--match-signature')
+    if CONFIG['block_connect']:
+        args.append('--block-connect')
+    return executable, args
 
 
 def main():
     if os.geteuid() != 0:
         sys.exit('Administrator authentication is required.')
     os.umask(0o077)
+    apply_config(load_config())
     state = load_state()
     if '--restore' in sys.argv:
         failures = restore(state)
@@ -258,15 +349,31 @@ def main():
     signal.signal(signal.SIGINT, stop)
     watcher = None
     background = None
+    last_spawn = 0.0
+    backoff = 1.0
     def supervise():
-        nonlocal watcher
-        if watcher is None or watcher.poll() is not None:
-            executable = ROOT / 'watchdog'
-            if not executable.exists():
-                executable = ROOT / 'jamf-test-blocker'  # Legacy installation.
-            watcher = subprocess.Popen([str(executable)])
+        nonlocal watcher, last_spawn, backoff
+        if watcher is not None and watcher.poll() is None:
+            return
+        now = time.monotonic()
+        if now < last_spawn + backoff:
+            return
+        last_spawn = now
+        executable, args = monitor_command()
+        if executable is None:
+            log('PROTECTION ERROR: Process monitor binary is missing; retrying.')
+            backoff = min(backoff * 2, 30)
+            return
+        try:
+            watcher = subprocess.Popen(args)
             log('WatchDog process monitor started.')
+            backoff = 1.0
+        except OSError as error:
+            log(f'PROTECTION ERROR: Could not start process monitor: {error}')
+            backoff = min(backoff * 2, 30)
     try:
+        if CONFIG['block_connect']:
+            log(targets.CONNECT_WARNING)
         supervise()
         if '--once' in sys.argv:
             failures = block_modes(state, executables()) + block_jobs(state)
@@ -274,8 +381,12 @@ def main():
             return bool(failures)
         background = BackgroundChecks(state, stop_event)
         background.start()
-        log('Permission checks: 200 ms; background discovery/job checks: 2 seconds; process monitor: 100 ms.')
+        log(f'Permission checks: {int(PERMISSION_INTERVAL * 1000)} ms; background discovery/job checks: {BACKGROUND_INTERVAL:g} seconds; process monitor: {MONITOR_INTERVAL_MS} ms.')
         run_permission_checks(state, background, stop_event, supervise)
+    except Exception as error:
+        log('PROTECTION ERROR: Guard failed: ' + repr(error))
+        time.sleep(min(backoff, 5))
+        return 1
     finally:
         stop_event.set()
         if background:
