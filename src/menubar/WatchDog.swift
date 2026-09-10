@@ -9,7 +9,7 @@ struct Activity: Decodable, Identifiable {
     let title: String
     let detail: String
     var symbol: String {
-        switch kind { case "process": return "hand.raised.fill"; case "permission": return "lock.fill"; case "job": return "gearshape.fill"; default: return "exclamationmark.triangle.fill" }
+        switch kind { case "process": return "hand.raised.fill"; case "permission": return "lock.fill"; case "job": return "gearshape.fill"; case "warning": return "clock.badge.exclamationmark"; default: return "exclamationmark.triangle.fill" }
     }
 }
 struct Snapshot: Decodable {
@@ -156,7 +156,7 @@ struct ActivityPanel: View {
                     if let events = store.snapshot?.events, !events.isEmpty {
                         ForEach(events.prefix(100)) { event in
                             HStack(alignment: .top, spacing: 11) {
-                                Image(systemName: event.symbol).font(.system(size: 12)).foregroundStyle(event.kind == "error" ? .orange : accent)
+                                Image(systemName: event.symbol).font(.system(size: 12)).foregroundStyle(["error", "warning"].contains(event.kind) ? .orange : accent)
                                     .frame(width: 28, height: 28).background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(alignment: .firstTextBaseline) {

@@ -38,7 +38,7 @@ class LifecycleTests(unittest.TestCase):
         label = 'local.example.jamf-test-blocker' if legacy else manage.LABEL
         plist = manage.LAUNCHDAEMONS / f'{label}.plist'
         root.mkdir()
-        for name in ('guard.py', 'watchdog'):
+        for name in ('guard.py', 'processes.py', 'watchdog'):
             (root / name).write_text('fixture')
         (root / 'state.json').write_text(json.dumps({'version': 1, 'modes': {}, 'jobs': {}}))
         data = {'Label': label, 'ProgramArguments': ['/test/python3', '-I', str(root / 'guard.py')]}

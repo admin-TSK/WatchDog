@@ -20,6 +20,8 @@ The event reader's code and cursor state are private to root. Its public directo
 
 Only recognized log messages become events. Existing history is imported from at most the last 256 KiB of log data. Up to 100 events remain visible. Native process-stop lines without timestamps are marked “Earlier” when imported; new untimestamped lines use the time the reader observed them. Cursor and event state survive restarts, and log rotation is recognized by file identity or truncation. Historical events are not replayed as new notifications.
 
+The guard and activity reader use macOS libproc metadata queries for session discovery and child-process checks, avoiding system-wide `ps` subprocesses. Health checks inspect all tracked executable paths. Historical `ps` session-scan timeouts are labeled as skipped session checks; actual control failures retain their error category. Feed upgrades preserve event IDs, timestamps, counts, and the log cursor.
+
 The app treats a snapshot older than 12 seconds as unavailable, rather than showing a stale healthy state. Optional notifications require the user's macOS permission. The companion does not detect kernel-level execution denials, retrieve policy names, or observe MDM commands. It reports what WatchDog's own logs confirm.
 
 ## Matching

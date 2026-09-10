@@ -13,6 +13,14 @@ import sys
 import time
 import uuid
 
+# Resolve the root-owned sibling explicitly; isolated Python excludes script paths.
+import importlib.util
+import sys
+sys.dont_write_bytecode = True
+_process_spec = importlib.util.spec_from_file_location('watchdog_processes', Path(__file__).with_name('processes.py'))
+processes = importlib.util.module_from_spec(_process_spec)
+_process_spec.loader.exec_module(processes)
+
 REPO = Path(__file__).resolve().parents[1]
 PRIVATE = Path('/Library/Application Support/WatchDog Monitor')
 PUBLIC = Path('/Library/Application Support/WatchDog Status')
@@ -63,6 +71,8 @@ def install():
     command('/bin/launchctl', 'bootout', f'system/{LABEL}', check=False)
     shutil.copyfile(REPO / 'src/event_bridge.py', PRIVATE / 'event_bridge.py')
     (PRIVATE / 'event_bridge.py').chmod(0o600)
+    shutil.copyfile(REPO / 'src/processes.py', PRIVATE / 'processes.py')
+    (PRIVATE / 'processes.py').chmod(0o600)
     (PRIVATE / 'config.json').write_text(json.dumps(config))
     (PRIVATE / 'config.json').chmod(0o600)
     data = {'Label': LABEL, 'ProgramArguments': [str(Path(sys.executable).resolve()), '-I', str(PRIVATE / 'event_bridge.py')],
@@ -108,11 +118,9 @@ def login(enable):
 
 
 def stop_app():
-    processes = command('/bin/ps', '-axo', 'pid=,comm=').stdout
-    for line in processes.splitlines():
-        values = line.strip().split(None, 1)
-        if len(values) == 2 and values[1] == str(APPLICATION / 'Contents/MacOS/WatchDog'):
-            try: os.kill(int(values[0]), signal.SIGTERM)
+    for pid in processes.pids():
+        if processes.path(pid) == str(APPLICATION / 'Contents/MacOS/WatchDog'):
+            try: os.kill(pid, signal.SIGTERM)
             except ProcessLookupError: pass
 
 
@@ -125,7 +133,7 @@ def remove():
         if not known_app(APPLICATION): raise RuntimeError('Refusing to remove a different WatchDog application.')
         shutil.rmtree(APPLICATION)
     PLIST.unlink(missing_ok=True)
-    for name in ('event_bridge.py', 'config.json', 'feed-state.json', 'feed-state.tmp'):
+    for name in ('event_bridge.py', 'processes.py', 'config.json', 'feed-state.json', 'feed-state.tmp'):
         (PRIVATE / name).unlink(missing_ok=True)
     if PRIVATE.exists(): PRIVATE.rmdir()
     for name in ('events.json', 'events.tmp'): (PUBLIC / name).unlink(missing_ok=True)

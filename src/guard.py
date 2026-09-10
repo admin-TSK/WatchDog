@@ -3,6 +3,14 @@
 import json, os, plistlib, re, signal, stat, subprocess, sys, threading, time
 from pathlib import Path
 
+# Resolve the root-owned sibling explicitly; isolated Python excludes script paths.
+import importlib.util
+import sys
+sys.dont_write_bytecode = True
+_process_spec = importlib.util.spec_from_file_location('watchdog_processes', Path(__file__).with_name('processes.py'))
+processes = importlib.util.module_from_spec(_process_spec)
+_process_spec.loader.exec_module(processes)
+
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / 'state.json'
 APP = Path('/Library/Application Support/JAMF/Jamf.app')
@@ -92,13 +100,7 @@ def job_label(label):
 def jobs():
     result = {('system', 'com.jamfsoftware.task.1'): (None, False),
               ('system', 'com.jamf.management.daemon'): (None, False)}
-    uids = {os.stat('/dev/console').st_uid}
-    # Active GUI sessions, including fast user switching.
-    ps = command('/bin/ps', '-axo', 'uid=,comm=')
-    for line in ps.stdout.splitlines():
-        fields = line.strip().split(None, 1)
-        if len(fields) == 2 and fields[1].endswith('/loginwindow'):
-            uids.add(int(fields[0]))
+    uids = processes.login_uids()
     scans = [(Path('/Library/LaunchDaemons'), ['system']),
              (Path('/Library/LaunchAgents'), [f'gui/{u}' for u in uids if u >= 500])]
     for folder, domains in scans:

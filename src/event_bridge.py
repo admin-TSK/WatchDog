@@ -10,6 +10,14 @@ import signal
 import subprocess
 import time
 
+# Resolve the root-owned sibling explicitly; isolated Python excludes script paths.
+import importlib.util
+import sys
+sys.dont_write_bytecode = True
+_process_spec = importlib.util.spec_from_file_location('watchdog_processes', Path(__file__).with_name('processes.py'))
+processes = importlib.util.module_from_spec(_process_spec)
+_process_spec.loader.exec_module(processes)
+
 ROOT = Path(__file__).resolve().parent
 PUBLIC = Path('/Library/Application Support/WatchDog Status')
 STOP = False
@@ -49,6 +57,11 @@ def parse_event(line, identity, observed, historical=False):
         if not re.fullmatch(r'com\.jamf(?:software|\.management)\.[a-zA-Z0-9_.-]+', value):
             return None
         event.update(kind='job', title='Background job '+('disabled' if 'disabled:' in line else 'unloaded'), detail=value)
+    elif 'TimeoutExpired' in line and "('/bin/ps', '-axo', 'uid=,comm=')" in line:
+        detail = ('Session scan timed out; permission checks continued.'
+                  if 'continue independently' in line else
+                  'The logged-in session scan exceeded 10 seconds and was skipped.')
+        event.update(kind='warning', title='Session check timed out', detail=detail)
     elif 'PROTECTION ERROR:' in line or line.startswith(('Cannot kill PID ', 'Cannot pause PID ', 'Process enumeration failed')):
         event.update(kind='error', title='A protection action failed', detail='Review the administrator log for details.')
     else:
@@ -63,9 +76,33 @@ class Feed:
         self.cursor = saved.get('cursor', {})
         self.process_total = saved.get('process_total', 0)
         self.action_total = saved.get('action_total', 0)
+        self.parser_version = saved.get('parser_version', 1)
+
+    def reclassify(self, path):
+        # Re-read retained raw entries to correct old generic labels, keeping IDs,
+        # timestamps, totals and cursor so history is neither erased nor replayed.
+        by_id = {event['id']: event for event in self.events}
+        with open(path, 'rb') as stream:
+            stat = os.fstat(stream.fileno())
+            signature = f'{stat.st_dev}:{stat.st_ino}'
+            offset = max(0, stat.st_size - 262144)
+            stream.seek(offset)
+            if offset: stream.readline()
+            while True:
+                start = stream.tell()
+                line = stream.readline(65537)
+                if not line or not line.endswith(b'\n'): break
+                event = parse_event(line.decode('utf-8', errors='replace').strip(),
+                                    f'{signature}:{start}', 0, historical=True)
+                if event and event['id'] in by_id:
+                    original = by_id[event['id']]
+                    original.update(kind=event['kind'], title=event['title'], detail=event['detail'])
+        self.parser_version = 2
 
     def read(self, path, now):
         try:
+            if self.parser_version < 2:
+                self.reclassify(path)
             with open(path, 'rb') as stream:
                 stat = os.fstat(stream.fileno())
                 signature = f'{stat.st_dev}:{stat.st_ino}'
@@ -96,22 +133,18 @@ class Feed:
             pass
 
     def saved(self):
-        return {'events': self.events, 'cursor': self.cursor, 'process_total': self.process_total, 'action_total': self.action_total}
+        return {'parser_version': self.parser_version, 'events': self.events, 'cursor': self.cursor, 'process_total': self.process_total, 'action_total': self.action_total}
 
 
 def health(config):
     result = subprocess.run(['/bin/launchctl', 'print', f'system/{config["guard_label"]}'], capture_output=True, text=True, timeout=5)
     running = result.returncode == 0 and 'state = running' in result.stdout
     pid = re.search(r'^\s*pid = (\d+)', result.stdout, re.MULTILINE)
-    process_list = subprocess.run(['/bin/ps', '-axo', 'ppid=,comm='], capture_output=True, text=True, timeout=5).stdout
-    monitor = False
-    for line in process_list.splitlines():
-        fields = line.strip().split(None, 1)
-        if len(fields) == 2 and pid and fields[0] == pid[1] and fields[1] in config['monitor_paths']:
-            monitor = True
+    monitor = bool(pid) and processes.has_child(int(pid[1]), config['monitor_paths'])
     binary = Path('/usr/local/jamf/bin/jamf')
-    permissions = not binary.exists() or os.stat(binary).st_mode & 0o111 == 0
     state = json.loads((Path(config['guard_root']) / 'state.json').read_text())
+    paths = {binary, *(Path(p) for p in state.get('modes', {}))}
+    permissions = all(not p.exists() or p.stat().st_mode & 0o111 == 0 for p in paths)
     return {'guard_running': running, 'monitor_running': monitor, 'execution_blocked': permissions,
             'executable_count': len(state.get('modes', {})), 'job_count': len(state.get('jobs', {}))}
 
@@ -144,7 +177,7 @@ def main():
                 previous = json.loads(json.dumps(saved))
             atomic_json(PUBLIC / 'events.json', snapshot, 0o644)
         except Exception as error:
-            print(f'WatchDog activity feed error: {type(error).__name__}', flush=True)
+            print(f'WatchDog activity feed error: {error!r}', flush=True)
             # Do not renew a healthy heartbeat when collection has failed.
         time.sleep(1)
 

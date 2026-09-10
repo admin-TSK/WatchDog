@@ -70,7 +70,7 @@ def install():
     python = str(Path(sys.executable).resolve())
     ROOT.mkdir(mode=0o700)
     try:
-        for source, name, mode in [(binary, 'watchdog', 0o700), (REPO / 'src' / 'guard.py', 'guard.py', 0o600)]:
+        for source, name, mode in [(binary, 'watchdog', 0o700), (REPO / 'src' / 'guard.py', 'guard.py', 0o600), (REPO / 'src' / 'processes.py', 'processes.py', 0o600)]:
             destination = ROOT / name
             shutil.copyfile(source, destination)
             destination.chmod(mode)
@@ -131,7 +131,7 @@ def uninstall():
         backup.chmod(0o600)
         print(f'Undo record preserved: {backup}')
     plist.unlink(missing_ok=True)
-    for name in ('watchdog', 'jamf-test-blocker', 'guard.py', 'state.json', 'state.tmp', 'installation.json'):
+    for name in ('watchdog', 'jamf-test-blocker', 'guard.py', 'processes.py', 'state.json', 'state.tmp', 'installation.json'):
         (root / name).unlink(missing_ok=True)
     root.rmdir()  # Refuse to discard unexpected files.
     print('WatchDog removed. Recorded settings restored; MDM enrollment unchanged.')

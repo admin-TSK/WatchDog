@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 — 2026-09-10
 
+- Replaced recurring system-wide ps commands with native macOS process metadata queries in the guard and activity reader.
+- Corrected historical session-scan timeout labels without deleting events or replaying notifications.
+- Extended live health checks to every tracked executable.
 - Reduced permission checks to 200 ms and separated slow component discovery and launch-job checks from the permission loop.
 - Added regression coverage for restored permissions and binary replacement while background checks stall.
 
