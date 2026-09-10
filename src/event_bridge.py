@@ -23,9 +23,11 @@ def _load(name):
 
 processes = _load('processes')
 targets = _load('targets')
+shields = _load('shields')
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = Path('/Library/Application Support/WatchDog Status')
+REQUESTS = PUBLIC / 'requests'
 STOP = False
 MAX_EVENTS = 100
 JOB_LABEL = re.compile(r'^com\.jamf(?:software|\.management|\.connect|\.appinstallers|\.selfservice)[a-zA-Z0-9_.]*$')
@@ -71,6 +73,12 @@ def parse_event(line, identity, observed, historical=False):
         event.update(kind='warning', code='session_scan_timeout', title='Session check timed out', detail=detail)
     elif line == 'Session discovery healthy: native process lookup.':
         event.update(kind='recovery', code='session_scan_timeout')
+    elif line.startswith('Shield ') and line.endswith('.'):
+        parts = line[7:-1].rsplit(' ', 1)
+        if len(parts) != 2 or parts[0] not in {'permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect'} or parts[1] not in {'on', 'off'}:
+            return None
+        event.update(kind='shield', title=f'{parts[0].replace("_", " ").title()} shield {parts[1]}',
+                     detail='Local control updated from Shields.')
     elif 'PROTECTION ERROR:' in line or line.startswith(('Cannot kill PID ', 'Cannot pause PID ', 'Process enumeration failed')):
         event.update(kind='error', title='A protection action failed', detail='Review the administrator log for details.')
     else:
@@ -161,6 +169,38 @@ class Feed:
                 'events': self.events, 'cursor': self.cursor, 'process_total': self.process_total, 'action_total': self.action_total}
 
 
+def consume_shield_requests(guard_root):
+    """Apply menu-bar shield requests into the guard's shields.json."""
+    path = Path(guard_root) / 'shields.json'
+    current = shields.load(path)
+    try:
+        REQUESTS.mkdir(parents=True, exist_ok=True)
+        os.chmod(REQUESTS, 0o1777)
+        items = sorted(REQUESTS.glob('*.json'))
+    except OSError:
+        return current
+    changed = False
+    for item in items:
+        try:
+            if item.is_symlink() or not item.is_file() or item.stat().st_size > 4096:
+                pass
+            else:
+                current = shields.apply(current, json.loads(item.read_text()))
+                changed = True
+        except (OSError, ValueError, TypeError):
+            pass
+        try:
+            item.unlink()
+        except OSError:
+            pass
+    if changed:
+        try:
+            shields.save(path, current)
+        except OSError:
+            pass
+    return current
+
+
 def execute_cleared(path):
     try:
         info = os.lstat(path)
@@ -181,8 +221,10 @@ def health(config):
     paths = {Path(p) for p in targets.EXACT_PATHS}
     paths.update(Path(p) for p in state.get('modes', {}))
     permissions = all(execute_cleared(path) for path in paths)
+    runtime = shields.load(Path(config['guard_root']) / 'shields.json')
     return {'guard_running': running, 'monitor_running': monitor, 'execution_blocked': permissions,
-            'executable_count': len(state.get('modes', {})), 'job_count': len(state.get('jobs', {}))}
+            'executable_count': len(state.get('modes', {})), 'job_count': len(state.get('jobs', {})),
+            'shields': runtime}
 
 
 def heal_guard(config, now, last_attempt, minimum=60):
@@ -215,6 +257,7 @@ def main():
         now = time.time()
         try:
             feed.read(config['log_path'], now)
+            consume_shield_requests(config['guard_root'])
             state = health(config)
             if not state['guard_running']:
                 last_heal, attempted = heal_guard(config, now, last_heal)

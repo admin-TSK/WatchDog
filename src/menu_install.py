@@ -67,6 +67,9 @@ def install():
     PRIVATE.mkdir(mode=0o700, exist_ok=True)
     PUBLIC.mkdir(mode=0o755, exist_ok=True)
     PUBLIC.chmod(0o755)
+    requests = PUBLIC / 'requests'
+    requests.mkdir(mode=0o755, exist_ok=True)
+    os.chmod(requests, 0o1777)
     # Only the event reader is stopped during an update. The guard keeps running.
     command('/bin/launchctl', 'bootout', f'system/{LABEL}', check=False)
     shutil.copyfile(REPO / 'src/event_bridge.py', PRIVATE / 'event_bridge.py')
@@ -75,6 +78,8 @@ def install():
     (PRIVATE / 'processes.py').chmod(0o600)
     shutil.copyfile(REPO / 'src/targets.py', PRIVATE / 'targets.py')
     (PRIVATE / 'targets.py').chmod(0o600)
+    shutil.copyfile(REPO / 'src/shields.py', PRIVATE / 'shields.py')
+    (PRIVATE / 'shields.py').chmod(0o600)
     python = str(Path(sys.executable).resolve())
     manage.write_runner(PRIVATE / 'run-events', 'event_bridge.py', manage.python_fallbacks(python))
     (PRIVATE / 'config.json').write_text(json.dumps(config))
@@ -141,9 +146,14 @@ def remove():
         if not known_app(APPLICATION): raise RuntimeError('Refusing to remove a different WatchDog application.')
         shutil.rmtree(APPLICATION)
     PLIST.unlink(missing_ok=True)
-    for name in ('event_bridge.py', 'processes.py', 'targets.py', 'run-events', 'config.json', 'feed-state.json', 'feed-state.tmp'):
+    for name in ('event_bridge.py', 'processes.py', 'targets.py', 'shields.py', 'run-events', 'config.json', 'feed-state.json', 'feed-state.tmp'):
         (PRIVATE / name).unlink(missing_ok=True)
     if PRIVATE.exists(): PRIVATE.rmdir()
+    requests = PUBLIC / 'requests'
+    if requests.exists():
+        for item in requests.glob('*'):
+            item.unlink(missing_ok=True)
+        requests.rmdir()
     for name in ('events.json', 'events.tmp'): (PUBLIC / name).unlink(missing_ok=True)
     if PUBLIC.exists(): PUBLIC.rmdir()
     print('Menu bar companion removed. The guard was not changed.')

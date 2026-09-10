@@ -13,6 +13,7 @@ struct Snapshot: Decodable {
     let process_total: Int
     let action_total: Int
     let events: [Activity]
+    let shields: ShieldState?
 }
 
 @MainActor final class ActivityStore: ObservableObject {
@@ -24,6 +25,8 @@ struct Snapshot: Decodable {
     @Published var notifications = UserDefaults.standard.bool(forKey: "notifications")
     @Published var notificationNote = ""
     @Published var launchAtLogin = false
+    @Published var tab = "shields"
+    @Published var pending: [String: Bool] = [:]
     var onChange: (() -> Void)?
     private var timer: Timer?
     private var previousIDs: Set<String>?
@@ -31,8 +34,33 @@ struct Snapshot: Decodable {
     let demo: Bool
     var loginURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/local.watchdog.menubar.plist") }
     var fresh: Bool { !readFailure && snapshot.map { now.timeIntervalSince1970 - $0.updated_at < 12 && now.timeIntervalSince1970 >= $0.updated_at - 5 } == true }
-    var active: Bool { fresh && snapshot.map { $0.guard_running && $0.monitor_running && $0.execution_blocked } == true }
-    var status: String { active ? "Local protection active" : fresh ? "Protection needs attention" : "Activity feed unavailable" }
+    var shields: ShieldState {
+        var value = snapshot?.shields ?? .coreOn
+        if let enabled = pending["permissions"] { value.permissions = enabled }
+        if let enabled = pending["jobs"] { value.jobs = enabled }
+        if let enabled = pending["monitor"] { value.monitor = enabled }
+        if let enabled = pending["sticky"] { value.sticky = enabled }
+        if let enabled = pending["signatures"] { value.signatures = enabled }
+        if let enabled = pending["connect"] { value.connect = enabled }
+        return value
+    }
+    var active: Bool {
+        guard fresh, let snap = snapshot else { return false }
+        if !snap.guard_running { return false }
+        let flags = shields
+        if flags.monitor && !snap.monitor_running { return false }
+        if flags.permissions && !snap.execution_blocked { return false }
+        return flags.permissions || flags.jobs || flags.monitor
+    }
+    var paused: Bool {
+        fresh && snapshot?.guard_running == true && !shields.permissions && !shields.jobs && !shields.monitor
+    }
+    var status: String {
+        if paused { return "Core shields paused" }
+        if active { return "Local protection active" }
+        if fresh { return "Protection needs attention" }
+        return "Activity feed unavailable"
+    }
     var unread: Int { snapshot?.events.filter { $0.countsAsUnread(since: lastViewed.timeIntervalSince1970) }.count ?? 0 }
     var resolvedCount: Int { snapshot?.events.filter { $0.isResolved }.count ?? 0 }
     var visibleEvents: [Activity] { Activity.visible(snapshot?.events ?? [], showResolved: showResolved) }
@@ -64,6 +92,9 @@ struct Snapshot: Decodable {
             previousIDs = Set(value.events.map(\.id))
             snapshot = value
             readFailure = false
+            if let live = value.shields {
+                pending = pending.filter { live.enabled($0.key) != $0.value }
+            }
         } catch { readFailure = true }
         onChange?()
     }
@@ -86,8 +117,24 @@ struct Snapshot: Decodable {
         let content = UNMutableNotificationContent()
         content.title = count > 1 ? "WatchDog recorded \(count) actions" : "WatchDog · \(event.title)"
         content.body = event.detail
+        if let attachment = Self.logoAttachment() {
+            content.attachments = [attachment]
+        }
         let request = UNNotificationRequest(identifier: event.id, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { _ in }
+    }
+    fileprivate static func logoAttachment() -> UNNotificationAttachment? {
+        let names = ["AppIcon@2x", "AppIcon", "Logo@3x", "Logo"]
+        guard let source = names.compactMap({ Bundle.main.url(forResource: $0, withExtension: "png") }).first else { return nil }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("WatchDogNotify", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let copy = folder.appendingPathComponent("logo-\(UUID().uuidString).png")
+            try FileManager.default.copyItem(at: source, to: copy)
+            return try UNNotificationAttachment(identifier: "logo", url: copy, options: [UNNotificationAttachmentOptionsTypeHintKey: "public.png"])
+        } catch {
+            return nil
+        }
     }
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
@@ -99,6 +146,31 @@ struct Snapshot: Decodable {
             } else if FileManager.default.fileExists(atPath: loginURL.path) { try FileManager.default.removeItem(at: loginURL) }
             launchAtLogin = enabled
         } catch { notificationNote = "Couldn’t update the login setting: \(error.localizedDescription)" }
+    }
+    func setShield(_ id: String, enabled: Bool) {
+        if id == "connect" && enabled && !confirmConnect() { return }
+        pending[id] = enabled
+        if demo { onChange?(); return }
+        let directory = feedURL.deletingLastPathComponent().appendingPathComponent("requests")
+        do {
+            let payload: [String: Any] = ["id": id, "enabled": enabled, "at": Date().timeIntervalSince1970]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            let url = directory.appendingPathComponent(UUID().uuidString + ".json")
+            try data.write(to: url, options: .atomic)
+        } catch {
+            pending[id] = nil
+            notificationNote = "Couldn’t update that shield. Reinstall WatchDog if Shields is missing."
+        }
+        onChange?()
+    }
+    private func confirmConnect() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Enable Jamf Connect blocking?"
+        alert.informativeText = "If this Mac uses Jamf Connect at the login window, users can be locked out until WatchDog is uninstalled. WatchDog never rewrites authorizationdb."
+        alert.addButton(withTitle: "Enable")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
     }
     func exportActivity() {
         let panel = NSSavePanel()
@@ -113,37 +185,79 @@ struct Snapshot: Decodable {
 }
 
 private let accent = Color(red: 0.68, green: 0.92, blue: 0.38)
+
+struct WatchDogLogo: View {
+    var size: CGFloat
+    var body: some View {
+        Group {
+            if let image = NSImage(named: "Logo") {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "shield.fill").foregroundStyle(accent)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+func menuBarLogo() -> NSImage? {
+    guard let base = NSImage(named: "MenuBarIcon") ?? NSImage(named: "Logo") else { return nil }
+    let image = base.copy() as? NSImage ?? base
+    image.size = NSSize(width: 18, height: 18)
+    image.isTemplate = false
+    image.accessibilityDescription = "WatchDog"
+    return image
+}
+
 struct ActivityPanel: View {
     @ObservedObject var store: ActivityStore
-    var panelSize = CGSize(width: 410, height: 620)
+    var panelSize = CGSize(width: 410, height: 700)
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "shield.lefthalf.filled").font(.system(size: 30, weight: .medium)).foregroundStyle(accent)
+                WatchDogLogo(size: 34)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("WatchDog").font(.system(size: 23, weight: .bold, design: .rounded))
                     Text(store.demo ? "DEMO · SAMPLE ACTIVITY" : "LOCAL FRAMEWORK MONITOR").font(.system(size: 9, weight: .semibold)).tracking(1.3).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Circle().fill(store.active ? accent : .orange).frame(width: 8, height: 8)
+                Circle().fill(store.active ? accent : store.paused ? Color.secondary : .orange).frame(width: 8, height: 8)
             }.padding(22)
             VStack(alignment: .leading, spacing: 7) {
-                Label(store.status, systemImage: store.active ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
-                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(store.active ? accent : .orange)
-                Text(store.fresh ? "Watching for Jamf framework activity." : "The guard may still be running. Check WatchDog’s status.")
+                Label(store.status, systemImage: store.active ? "checkmark.shield.fill" : store.paused ? "pause.circle.fill" : "exclamationmark.shield.fill")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(store.active ? accent : store.paused ? Color.secondary : .orange)
+                Text(store.fresh ? "Toggle each control independently." : "The guard may still be running. Check WatchDog’s status.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                HStack(spacing: 0) {
-                    metric("PROCESSES STOPPED", value: store.snapshot?.process_total ?? 0)
-                    Divider().frame(height: 34).padding(.horizontal, 15)
-                    metric("EXECUTION CONTROLS", value: store.snapshot?.executable_count ?? 0)
-                }.padding(.top, 9)
+                if store.tab != "shields" {
+                    HStack(spacing: 0) {
+                        metric("PROCESSES STOPPED", value: store.snapshot?.process_total ?? 0)
+                        Divider().frame(height: 34).padding(.horizontal, 15)
+                        metric("EXECUTION CONTROLS", value: store.snapshot?.executable_count ?? 0)
+                    }.padding(.top, 9)
+                }
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 18)
+            Picker("View", selection: $store.tab) {
+                Text("Shields").tag("shields")
+                Text("Activity").tag("activity")
+            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 18).padding(.top, 12)
+            if store.tab == "shields" {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 8) {
+                        ForEach(shieldCatalog) { spec in shieldTile(spec) }
+                    }.padding(.horizontal, 18).padding(.vertical, 12)
+                }.frame(minHeight: 40, maxHeight: .infinity)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("RECENT ACTIVITY").font(.system(size: 10, weight: .semibold)).tracking(1.1).foregroundStyle(.secondary)
                 Spacer()
                 if store.unread > 0 { Text("\(store.unread) new").font(.system(size: 10, weight: .medium)).foregroundStyle(accent) }
-            }.padding(.horizontal, 22).padding(.top, 19).padding(.bottom, 9)
+            }.padding(.horizontal, 22).padding(.top, 12).padding(.bottom, 9)
             if store.resolvedCount > 0 {
                 Button {
                     store.showResolved.toggle()
@@ -173,26 +287,49 @@ struct ActivityPanel: View {
                         }
                     } else {
                         VStack(spacing: 8) {
-                            Image(systemName: "shield.checkered").font(.system(size: 24)).foregroundStyle(.secondary)
+                            WatchDogLogo(size: 28).opacity(0.7)
                             Text("No activity recorded yet").font(.system(size: 12, weight: .medium))
                             Text("Confirmed actions will appear here.").font(.system(size: 11)).foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity).padding(.vertical, 38)
                     }
                 }
             }.frame(minHeight: 40, maxHeight: .infinity)
+                }
+            }
             Divider()
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 Toggle("Notify me about new actions", isOn: Binding(get: { store.notifications }, set: store.setNotifications)).toggleStyle(.switch).controlSize(.mini)
                 Toggle("Open at login", isOn: Binding(get: { store.launchAtLogin }, set: store.setLaunchAtLogin)).toggleStyle(.switch).controlSize(.mini)
                 if !store.notificationNote.isEmpty { Text(store.notificationNote).font(.caption2).foregroundStyle(.orange) }
-                Text("Shows WatchDog actions, not every denied attempt. MDM remains outside its scope.").font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Export activity…") { store.exportActivity() }
                     Spacer()
                     Button("Quit menu bar") { NSApp.terminate(nil) }.help("Closes this app. Protection keeps running.")
                 }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
-            }.font(.system(size: 11)).padding(18)
+            }.font(.system(size: 11)).padding(.horizontal, 18).padding(.vertical, 14)
         }.frame(width: panelSize.width, height: panelSize.height).background(Color(red: 0.065, green: 0.09, blue: 0.12)).environment(\.colorScheme, .dark)
+    }
+    func shieldTile(_ spec: ShieldSpec) -> some View {
+        let on = store.shields.enabled(spec.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center) {
+                Image(systemName: spec.symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(on ? accent : .secondary)
+                    .frame(width: 26, height: 26)
+                    .background(on ? accent.opacity(0.18) : Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                Spacer(minLength: 8)
+                Toggle(spec.title, isOn: Binding(
+                    get: { store.shields.enabled(spec.id) },
+                    set: { store.setShield(spec.id, enabled: $0) }
+                )).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+                    .accessibilityLabel(spec.title)
+            }
+            Text(spec.title).font(.system(size: 12, weight: .semibold))
+            Text(spec.detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
+        .background(Color.white.opacity(on ? 0.07 : 0.04), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? accent.opacity(0.5) : Color.white.opacity(0.06), lineWidth: 1))
     }
     func metric(_ label: String, value: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -208,6 +345,9 @@ struct ActivityPanel: View {
     private let store = ActivityStore()
     private var previewWindow: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let icon = NSImage(named: "WatchDog") ?? NSImage(named: "AppIcon") ?? NSImage(named: "Logo") {
+            NSApp.applicationIconImage = icon
+        }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
         item.button?.action = #selector(toggle)
@@ -222,10 +362,19 @@ struct ActivityPanel: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.toggle() }
         }
         if ProcessInfo.processInfo.arguments.contains("--preview") {
-            let controller = NSHostingController(rootView: ActivityPanel(store: store))
-            let window = NSWindow(contentViewController: controller)
+            let size = PanelGeometry.contentSize(in: NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768))
+            let controller = NSHostingController(rootView: ActivityPanel(store: store, panelSize: size))
+            controller.sizingOptions = []
+            controller.preferredContentSize = size
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: size.width, height: size.height),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentViewController = controller
             window.title = store.demo ? "WatchDog — Demo" : "WatchDog Activity"
-            window.styleMask = [.titled, .closable]
+            window.setContentSize(size)
             window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -233,9 +382,9 @@ struct ActivityPanel: View {
         }
     }
     func updateButton() {
-        let name = store.active ? (store.unread > 0 ? "shield.fill" : "shield.lefthalf.filled") : "exclamationmark.shield"
-        item.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "WatchDog")
-        item.button?.image?.isTemplate = true
+        item.button?.image = menuBarLogo()
+        item.button?.image?.isTemplate = false
+        item.button?.alphaValue = store.active ? 1 : store.paused ? 0.45 : 0.8
         item.button?.title = store.unread > 0 ? " \(min(store.unread, 99))" : ""
         item.button?.toolTip = "WatchDog · \(store.status)"
     }

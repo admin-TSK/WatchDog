@@ -4,7 +4,7 @@ enum PanelGeometry {
     static func contentSize(in visible: NSRect) -> NSSize {
         // Leave room for the popover's arrow, border, and display-edge margins.
         NSSize(width: min(410, max(1, visible.width - 24)),
-               height: min(620, max(1, visible.height - 48)))
+               height: min(700, max(1, visible.height - 48)))
     }
     static func origin(for frame: NSRect, in visible: NSRect) -> NSPoint {
         let bounds = visible.insetBy(dx: 6, dy: 6)

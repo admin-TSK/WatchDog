@@ -6,7 +6,7 @@ Reversible **local Jamf control** for enrolled macOS test machines. WatchDog can
 
 > **Experimental.** This is a test utility, not a security boundary. It interrupts inventory, policies, Self Service, and App Installers that depend on local binaries. It does not freeze the disk, and it does not stop commands that arrive through MDM. Polling has a CPU cost. It is not kernel execution denial.
 
-**0.3.0** · macOS 14+ · independent of Jamf · [changelog](CHANGELOG.md) · [architecture](docs/architecture.md) · [security](SECURITY.md)
+**0.3.1** · macOS 14+ · independent of Jamf · [changelog](CHANGELOG.md) · [architecture](docs/architecture.md) · [security](SECURITY.md)
 
 ## Quick start
 
@@ -33,7 +33,7 @@ If WatchDog or the older “Jamf Test Blocker” is already installed, uninstall
 WATCHDOG_PYTHON=/absolute/path/to/python3 ./install.sh
 ```
 
-Optional flags, all off by default:
+Optional flags, all off by default at install. The Shields tab can later toggle the same controls without reinstalling:
 
 ```sh
 WATCHDOG_STICKY_BLOCK=1 WATCHDOG_MATCH_SIGNATURE=1 ./install.sh
@@ -55,11 +55,24 @@ Uninstall restores what WatchDog recorded. Root, MDM, or an updater can reverse 
 
 ## Menu bar
 
-**WatchDog.app** installs with the guard. The shield in the menu bar shows live status, recent actions, an unread badge, optional notifications, login startup, and a JSON export.
+**WatchDog.app** installs with the guard. The shield in the menu bar opens a **Shields** tab and an **Activity** tab.
+
+Shields shows one tile per control. Toggle any layer independently:
+
+| Shield | Default | Effect |
+| --- | --- | --- |
+| Permissions | On | Strip execute bits on matched Jamf binaries |
+| Launch jobs | On | Disable and unload matching launch jobs |
+| Process monitor | On | Pause and kill matching processes |
+| Sticky block | Off | `UF_IMMUTABLE` after stripping execute |
+| Signatures | Off | Match Jamf code-signing IDs in the monitor |
+| Jamf Connect | Off | Optional Connect app/agents; confirm before enabling |
+
+Turning a core shield off reverses that layer. Enabling Connect can lock the login window on Macs that use it; WatchDog still never rewrites `authorizationdb`.
+
+The Activity tab reports confirmed WatchDog actions, an unread badge, optional notifications, login startup, and a JSON export. It does not list every `EACCES` from stripped execute bits, Jamf policy names, or MDM commands. The feed keeps the latest 100 events.
 
 Quit the menu bar to close the interface only. Protection keeps running.
-
-The panel reports confirmed WatchDog actions. It does not list every `EACCES` from stripped execute bits, Jamf policy names, or MDM commands. The feed keeps the latest 100 events.
 
 ## How it works
 
@@ -93,6 +106,7 @@ Prefer `/usr/bin/python3` when it is 3.10+. The installer stores a fallback list
 | Menu bar app | `/Applications/WatchDog.app` |
 | Event reader | `local.watchdog.events` · `/Library/Application Support/WatchDog Monitor/` |
 | Activity feed | `/Library/Application Support/WatchDog Status/events.json` |
+| Shield requests | `/Library/Application Support/WatchDog Status/requests/` |
 | Event log | `/var/log/watchdog-events.log` |
 | Log rotation | `/etc/newsyslog.d/local.watchdog.conf` |
 | Login item | `~/Library/LaunchAgents/local.watchdog.menubar.plist` |

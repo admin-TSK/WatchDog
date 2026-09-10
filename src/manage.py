@@ -148,6 +148,7 @@ def install():
             (REPO / 'src' / 'guard.py', 'guard.py', 0o600),
             (REPO / 'src' / 'processes.py', 'processes.py', 0o600),
             (REPO / 'src' / 'targets.py', 'targets.py', 0o600),
+            (REPO / 'src' / 'shields.py', 'shields.py', 0o600),
         ]:
             destination = ROOT / name
             shutil.copyfile(source, destination)
@@ -230,8 +231,8 @@ def uninstall():
         print(f'Undo record preserved: {backup}')
     plist.unlink(missing_ok=True)
     NEWSYSLOG.unlink(missing_ok=True)
-    for name in ('watchdog', 'jamf-test-blocker', 'guard.py', 'processes.py', 'targets.py',
-                 'run-guard', 'state.json', 'state.tmp', 'installation.json'):
+    for name in ('watchdog', 'jamf-test-blocker', 'guard.py', 'processes.py', 'targets.py', 'shields.py',
+                 'run-guard', 'state.json', 'state.tmp', 'installation.json', 'shields.json'):
         (root / name).unlink(missing_ok=True)
     root.rmdir()
     print('WatchDog removed. Recorded settings restored; MDM enrollment unchanged.')
@@ -272,6 +273,15 @@ def status():
         print(f'Sticky block: {info.get("sticky_block", False)}')
         print(f'Signature matching: {info.get("match_signature", False)}')
         print(f'Jamf Connect blocking: {info.get("block_connect", False)}')
+    shields_path = root / 'shields.json'
+    if shields_path.exists():
+        try:
+            live = json.loads(shields_path.read_text())
+            print('Shields: ' + ', '.join(
+                f'{key}={"on" if live.get(key) else "off"}'
+                for key in ('permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect')))
+        except (OSError, ValueError, TypeError):
+            print('Shields: unreadable')
     state_path = root / 'state.json'
     if state_path.exists():
         state = json.loads(state_path.read_text())

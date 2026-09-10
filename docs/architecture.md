@@ -17,7 +17,9 @@ flowchart TD
 
 A separate root LaunchDaemon runs `event_bridge.py` through `run-events`. It reads the existing guard log and undo record, checks the guard and its child monitor, and publishes a small JSON snapshot once per second. If the guard is not running, it attempts one `launchctl bootstrap` per minute. `./install.sh` installs this companion with the guard.
 
-The event reader's code and cursor state are private to root. Its public directory is root-owned mode `0755`, and the snapshot is mode `0644`. Other local users can read the same limited activity feed: event categories, framework executable names or job labels, timestamps, PIDs, and counts. It exposes no original file paths, enrollment information, credentials, or raw error details. The menu bar app runs as the signed-in user and cannot change the guard through this feed.
+The event reader's code and cursor state are private to root. Its public directory is root-owned mode `0755`, and the snapshot is mode `0644`. Other local users can read the same limited activity feed: event categories, framework executable names or job labels, timestamps, PIDs, and counts. It exposes no original file paths, enrollment information, credentials, or raw error details.
+
+The menu bar cannot write the guard's undo record or the activity feed. It can change runtime shields by dropping `{id, enabled}` JSON into `/Library/Application Support/WatchDog Status/requests/` (mode `1777`). The root event reader applies only known shield keys into the guard's `shields.json`. Any local account that can write that drop folder can toggle WatchDog's local controls. The feed itself stays read-only.
 
 Only recognized log messages become events. Existing history is imported from at most the last 256 KiB of log data. Up to 100 events remain visible. Native process-stop lines without timestamps are marked “Earlier” when imported; new untimestamped lines use the time the reader observed them. Cursor and event state survive restarts, and log rotation is recognized by file identity or truncation. Historical events are not replayed as new notifications. Logs are rotated by `/etc/newsyslog.d/local.watchdog.conf`.
 
@@ -55,7 +57,7 @@ Copied binaries are missed unless signature matching is enabled. Descendants tha
 
 The native monitor checks processes every 50 ms by default. The guard checks permissions at known executable paths every 100 ms, including files replaced at those paths. A separate background thread discovers new component paths and checks launch jobs approximately every two seconds. Slow session discovery or launchctl commands cannot hold up the permission loop. Both threads serialize changes to the undo record. All intervals are best-effort polling, configurable in `installation.json`. Continuous monitoring has a CPU cost. This is a test control, not a kernel execution-denial mechanism or a write sandbox.
 
-Optional sticky block (`WATCHDOG_STICKY_BLOCK=1`) sets `UF_IMMUTABLE` after stripping execute bits so a naive `chmod +x` cannot restore execution until the flag is cleared. Original flags are recorded in the undo record and restored on uninstall.
+Optional sticky block (`WATCHDOG_STICKY_BLOCK=1` or the Shields tile) sets `UF_IMMUTABLE` after stripping execute bits so a naive `chmod +x` cannot restore execution until the flag is cleared. Original flags are recorded in the undo record and restored on uninstall. Turning the Permissions, Launch jobs, or Process monitor shield off reverses that layer while WatchDog remains installed.
 
 Jamf documents the distinction between its local binary and MDM in [Jamf Pro framework fundamentals](https://www.jamf.com/blog/fundamentals-jamf-pro-framework-jnuc2022/), and lists its local components in [Components Installed on Managed Computers](https://learn.jamf.com/r/en-US/jamf-pro-documentation-11.28.0/Components_Installed_on_Managed_Computers).
 

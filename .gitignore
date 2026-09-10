@@ -10,6 +10,8 @@ __pycache__/
 state.json
 state.tmp
 installation.json
+shields.json
+shields.tmp
 *.log
 .env
 .env.*

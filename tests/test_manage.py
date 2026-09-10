@@ -120,6 +120,21 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('Jamf Connect blocking: False', text)
         self.assertIn('MDM enrollment is outside WatchDog’s scope.', text)
 
+    def test_status_reports_live_shields(self):
+        root, plist, label, python = self.fixture()
+        (root / 'installation.json').write_text(json.dumps({
+            'version': '0.3.1', 'sticky_block': False, 'match_signature': False, 'block_connect': False
+        }))
+        (root / 'shields.json').write_text(json.dumps({
+            'permissions': True, 'jobs': False, 'monitor': True, 'sticky': False, 'signatures': False, 'connect': False
+        }))
+        launchctl = subprocess.CompletedProcess([], 0, 'state = running\n pid = 99\n', '')
+        with patch.object(manage, 'run', return_value=launchctl), \
+             patch('sys.stdout', new_callable=__import__('io').StringIO) as stdout:
+            manage.status()
+        self.assertIn('jobs=off', stdout.getvalue())
+        self.assertIn('permissions=on', stdout.getvalue())
+
 
 if __name__ == '__main__':
     unittest.main()

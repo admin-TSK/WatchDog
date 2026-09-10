@@ -16,6 +16,7 @@ struct Activity: Decodable, Identifiable {
         case "process": return "hand.raised.fill"
         case "permission": return "lock.fill"
         case "job": return "gearshape.fill"
+        case "shield": return "switch.2"
         case "warning": return "clock.badge.exclamationmark"
         default: return "exclamationmark.triangle.fill"
         }

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="50 20 160 200" role="img" aria-labelledby="title">
+  <title id="title">WatchDog</title>
+  <path d="M62 54 130 32 198 54v66c0 41-27 69-68 88-41-19-68-47-68-88Z" fill="#B6F36B"/>
+  <path d="m92 78 17 14h42l17-14 6 48-20 32h-48l-20-32Z" fill="#0B1220"/>
+  <path d="m107 117 10 3m26 0 10-3" stroke="#B6F36B" stroke-width="7" stroke-linecap="round"/>
+  <path d="m120 139 10 8 10-8Z" fill="#B6F36B"/>
+</svg>

@@ -76,7 +76,10 @@ class EventTests(unittest.TestCase):
             config = {'guard_label': 'test.guard', 'monitor_paths': ['/test/monitor'], 'guard_root': temp}
             result = subprocess.CompletedProcess([], 0, 'state = running\n pid = 123\n', '')
             with patch.object(events.subprocess, 'run', return_value=result) as command, patch.object(events.processes, 'has_child', return_value=True):
-                self.assertFalse(events.health(config)['execution_blocked'])
+                snapshot = events.health(config)
+                self.assertFalse(snapshot['execution_blocked'])
+                self.assertTrue(snapshot['shields']['permissions'])
+                self.assertFalse(snapshot['shields']['connect'])
                 self.assertEqual(command.call_args.args[0][0], '/bin/launchctl')
                 self.assertEqual(command.call_count, 1)
 
@@ -91,6 +94,10 @@ class EventTests(unittest.TestCase):
         self.assertEqual(connect['detail'], 'com.jamf.connect.useragent')
         error = events.parse_event('PROTECTION ERROR: secret private path', 'd', 42)
         self.assertNotIn('secret', str(error))
+        shield = events.parse_event('Shield monitor off.', 's', 42)
+        self.assertEqual(shield['kind'], 'shield')
+        self.assertEqual(shield['title'], 'Monitor shield off')
+        self.assertIsNone(events.parse_event('Shield mystery on.', 'x', 42))
 
     def test_process_time_not_invented_for_old_native_logs(self):
         line = 'Killed framework process or observed descendant PID 123.'

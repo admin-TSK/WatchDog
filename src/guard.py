@@ -14,6 +14,7 @@ def _load(name):
 
 processes = _load('processes')
 targets = _load('targets')
+shields = _load('shields')
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / 'state.json'
@@ -26,6 +27,8 @@ UF_IMMUTABLE = getattr(stat, 'UF_IMMUTABLE', 0x00000002)
 STATE_LOCK = threading.RLock()
 BASE_EXECUTABLES = {Path(p) for p in targets.EXACT_PATHS}
 SESSION_LOOKUP_HEALTHY = False
+SHIELDS = dict(shields.DEFAULTS)
+SHIELDS_READY = False
 CONFIG = {
     'permission_interval': PERMISSION_INTERVAL,
     'background_interval': BACKGROUND_INTERVAL,
@@ -67,6 +70,30 @@ def apply_config(config):
     PERMISSION_INTERVAL = config['permission_interval']
     BACKGROUND_INTERVAL = config['background_interval']
     MONITOR_INTERVAL_MS = config['monitor_interval_ms']
+
+
+def refresh_shields():
+    """Reload shields.json and mirror optional flags into CONFIG. Returns (current, previous)."""
+    global SHIELDS, CONFIG, SHIELDS_READY
+    with STATE_LOCK:
+        previous = dict(SHIELDS)
+        path = STATE.with_name('shields.json')
+        current = shields.load(path, CONFIG)
+        if not path.exists():
+            shields.save(path, current)
+        CONFIG['sticky_block'] = current['sticky']
+        CONFIG['match_signature'] = current['signatures']
+        CONFIG['block_connect'] = current['connect']
+        if SHIELDS_READY:
+            for key in shields.KEYS:
+                if previous.get(key) != current[key]:
+                    log(f'Shield {key} {"on" if current[key] else "off"}.')
+                    if key == 'connect' and current[key]:
+                        log(targets.CONNECT_WARNING)
+        else:
+            SHIELDS_READY = True
+        SHIELDS = current
+        return current, previous
 
 def load_state():
     if STATE.exists():
@@ -254,8 +281,8 @@ def restore_modes(state):
             failures.append(f'{path}: {e}')
     return failures
 
-def restore(state):
-    failures = restore_modes(state)
+def restore_jobs(state):
+    failures = []
     for key, original in state['jobs'].items():
         if original.get('original_override_unverified'):
             log(f'NOTE: {key} pre-install override was not captured; restoring the documented enabled default.')
@@ -272,6 +299,23 @@ def restore(state):
                     failures.append(f'Could not reload {key}: {action.stderr.strip()}')
                     continue
         log(f'Original launch-job state restored: {key}')
+    return failures
+
+
+def restore(state):
+    return restore_modes(state) + restore_jobs(state)
+
+
+def clear_sticky(state):
+    failures = []
+    for path in state.get('modes', {}):
+        try:
+            flags = int((state.get('flags') or {}).get(path, 0))
+            _set_flags(Path(path), flags & ~UF_IMMUTABLE)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            failures.append(f'{path}: {error}')
     return failures
 
 class BackgroundChecks(threading.Thread):
@@ -297,8 +341,16 @@ class BackgroundChecks(threading.Thread):
                     tracked = {Path(p) for p in self.state['modes']}
                 with self.path_lock:
                     self.cached_paths = sorted(set(discovered) | tracked)
-                for failure in block_jobs(self.state):
-                    log('PROTECTION ERROR: ' + failure)
+                current, previous = refresh_shields()
+                if previous.get('jobs') and not current['jobs']:
+                    for failure in restore_jobs(self.state):
+                        log('PROTECTION ERROR: ' + failure)
+                elif current['jobs']:
+                    for failure in block_jobs(self.state):
+                        log('PROTECTION ERROR: ' + failure)
+                if previous.get('sticky') and not current['sticky']:
+                    for failure in clear_sticky(self.state):
+                        log('PROTECTION ERROR: ' + failure)
             except subprocess.TimeoutExpired as error:
                 log('PROTECTION ERROR: Background status check timed out; permission checks continue independently. ' + repr(error))
             except Exception as error:
@@ -309,10 +361,15 @@ class BackgroundChecks(threading.Thread):
 def run_permission_checks(state, background, stop_event, supervise=lambda: None):
     while not stop_event.is_set():
         started = time.monotonic()
+        current, previous = refresh_shields()
+        if previous.get('permissions') and not current['permissions']:
+            for failure in restore_modes(state):
+                log('PROTECTION ERROR: ' + failure)
         supervise()
         try:
-            for failure in block_modes(state, background.paths()):
-                log('PROTECTION ERROR: ' + failure)
+            if current['permissions']:
+                for failure in block_modes(state, background.paths()):
+                    log('PROTECTION ERROR: ' + failure)
         except Exception as error:
             log('PROTECTION ERROR: Permission check: ' + repr(error))
         stop_event.wait(max(0, PERMISSION_INTERVAL - (time.monotonic() - started)))
@@ -351,32 +408,61 @@ def main():
     background = None
     last_spawn = 0.0
     backoff = 1.0
+    last_args = None
     def supervise():
-        nonlocal watcher, last_spawn, backoff
-        if watcher is not None and watcher.poll() is None:
+        nonlocal watcher, last_spawn, backoff, last_args
+        current, _previous = refresh_shields()
+        if not current['monitor']:
+            if watcher is not None and watcher.poll() is None:
+                watcher.terminate()
+                try:
+                    watcher.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    watcher.kill()
+                    watcher.wait()
+                log('WatchDog process monitor stopped.')
+            watcher = None
+            last_args = None
             return
+        executable, args = monitor_command()
+        running = watcher is not None and watcher.poll() is None
+        if running and last_args == args:
+            return
+        if running:
+            watcher.terminate()
+            try:
+                watcher.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                watcher.kill()
+                watcher.wait()
+            watcher = None
         now = time.monotonic()
         if now < last_spawn + backoff:
             return
         last_spawn = now
-        executable, args = monitor_command()
         if executable is None:
             log('PROTECTION ERROR: Process monitor binary is missing; retrying.')
             backoff = min(backoff * 2, 30)
             return
         try:
             watcher = subprocess.Popen(args)
+            last_args = args
             log('WatchDog process monitor started.')
             backoff = 1.0
         except OSError as error:
             log(f'PROTECTION ERROR: Could not start process monitor: {error}')
             backoff = min(backoff * 2, 30)
     try:
+        refresh_shields()
         if CONFIG['block_connect']:
             log(targets.CONNECT_WARNING)
         supervise()
         if '--once' in sys.argv:
-            failures = block_modes(state, executables()) + block_jobs(state)
+            failures = []
+            if SHIELDS['permissions']:
+                failures.extend(block_modes(state, executables()))
+            if SHIELDS['jobs']:
+                failures.extend(block_jobs(state))
             for failure in failures: log('PROTECTION ERROR: ' + failure)
             return bool(failures)
         background = BackgroundChecks(state, stop_event)

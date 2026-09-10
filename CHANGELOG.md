@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 — 2026-09-10
+
+- Added a **Shields** tab: one tile per local control, each independently toggleable from the menu bar.
+- Core shields (permissions, launch jobs, process monitor) default on. Sticky block, signature matching, and Jamf Connect default off.
+- Turning a core shield off reverses that layer (restore modes, restore jobs, or stop the monitor). Enabling Jamf Connect asks for confirmation.
+- Menu bar writes `{id, enabled}` JSON into a `1777` drop folder; the root event reader applies accepted keys to `shields.json`. The activity feed stays read-only.
+- Menu bar status item, panel header, and notification banners use the WatchDog shield mark.
+
 ## 0.3.0 — 2026-09-10
 
 - Unified path, launch-job, and signing matches in `src/targets.py`, kept in parity with the native monitor.
