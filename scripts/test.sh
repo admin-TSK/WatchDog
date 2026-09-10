@@ -13,3 +13,6 @@ for script in "$REPO_ROOT"/*.command "$REPO_ROOT"/scripts/*.sh; do /bin/bash -n 
 
 xcrun swiftc "$REPO_ROOT/src/menubar/PanelGeometry.swift" "$REPO_ROOT/tests/test_layout.swift" -o "$REPO_ROOT/build/test-layout"
 "$REPO_ROOT/build/test-layout"
+
+xcrun swiftc "$REPO_ROOT/src/menubar/Activity.swift" "$REPO_ROOT/tests/test_activity.swift" -o "$REPO_ROOT/build/test-activity"
+"$REPO_ROOT/build/test-activity"

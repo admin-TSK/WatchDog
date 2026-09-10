@@ -2,16 +2,6 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
-struct Activity: Decodable, Identifiable {
-    let id: String
-    let timestamp: Double?
-    let kind: String
-    let title: String
-    let detail: String
-    var symbol: String {
-        switch kind { case "process": return "hand.raised.fill"; case "permission": return "lock.fill"; case "job": return "gearshape.fill"; case "warning": return "clock.badge.exclamationmark"; default: return "exclamationmark.triangle.fill" }
-    }
-}
 struct Snapshot: Decodable {
     let schema: Int
     let updated_at: Double
@@ -27,6 +17,7 @@ struct Snapshot: Decodable {
 
 @MainActor final class ActivityStore: ObservableObject {
     @Published var snapshot: Snapshot?
+    @Published var showResolved = false
     @Published var now = Date()
     @Published var readFailure = false
     @Published var lastViewed = UserDefaults.standard.object(forKey: "lastViewed") as? Date ?? Date()
@@ -42,7 +33,9 @@ struct Snapshot: Decodable {
     var fresh: Bool { !readFailure && snapshot.map { now.timeIntervalSince1970 - $0.updated_at < 12 && now.timeIntervalSince1970 >= $0.updated_at - 5 } == true }
     var active: Bool { fresh && snapshot.map { $0.guard_running && $0.monitor_running && $0.execution_blocked } == true }
     var status: String { active ? "Local protection active" : fresh ? "Protection needs attention" : "Activity feed unavailable" }
-    var unread: Int { snapshot?.events.filter { ($0.timestamp ?? 0) > lastViewed.timeIntervalSince1970 }.count ?? 0 }
+    var unread: Int { snapshot?.events.filter { $0.countsAsUnread(since: lastViewed.timeIntervalSince1970) }.count ?? 0 }
+    var resolvedCount: Int { snapshot?.events.filter { $0.isResolved }.count ?? 0 }
+    var visibleEvents: [Activity] { Activity.visible(snapshot?.events ?? [], showResolved: showResolved) }
 
     init() {
         let args = ProcessInfo.processInfo.arguments
@@ -65,7 +58,7 @@ struct Snapshot: Decodable {
             let value = try JSONDecoder().decode(Snapshot.self, from: data)
             guard value.schema == 1 else { throw CocoaError(.coderReadCorrupt) }
             if let previousIDs, notifications, !demo {
-                let new = value.events.filter { !previousIDs.contains($0.id) && ($0.timestamp ?? 0) > Date().timeIntervalSince1970 - 15 }
+                let new = value.events.filter { !previousIDs.contains($0.id) && $0.countsAsUnread(since: Date().timeIntervalSince1970 - 15) }
                 if let latest = new.first { notify(latest, count: new.count) }
             }
             previousIDs = Set(value.events.map(\.id))
@@ -151,16 +144,24 @@ struct ActivityPanel: View {
                 Spacer()
                 if store.unread > 0 { Text("\(store.unread) new").font(.system(size: 10, weight: .medium)).foregroundStyle(accent) }
             }.padding(.horizontal, 22).padding(.top, 19).padding(.bottom, 9)
+            if store.resolvedCount > 0 {
+                Button {
+                    store.showResolved.toggle()
+                } label: {
+                    Label("\(store.resolvedCount) past warnings resolved · \(store.showResolved ? "Hide" : "Show")", systemImage: "checkmark.circle")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }.buttonStyle(.plain).padding(.horizontal, 22).padding(.bottom, 8)
+            }
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if let events = store.snapshot?.events, !events.isEmpty {
-                        ForEach(events.prefix(100)) { event in
+                    if !store.visibleEvents.isEmpty {
+                        ForEach(store.visibleEvents.prefix(100)) { event in
                             HStack(alignment: .top, spacing: 11) {
-                                Image(systemName: event.symbol).font(.system(size: 12)).foregroundStyle(["error", "warning"].contains(event.kind) ? .orange : accent)
+                                Image(systemName: event.symbol).font(.system(size: 12)).foregroundStyle(event.isResolved ? .gray : ["error", "warning"].contains(event.kind) ? .orange : accent)
                                     .frame(width: 28, height: 28).background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(alignment: .firstTextBaseline) {
-                                        Text(event.title).font(.system(size: 12, weight: .semibold))
+                                        Text(event.displayTitle).font(.system(size: 12, weight: .semibold))
                                         Spacer(minLength: 5)
                                         Text(event.timestamp.map { Date(timeIntervalSince1970: $0).formatted(date: .omitted, time: .standard) } ?? "Earlier")
                                             .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)

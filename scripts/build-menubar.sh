@@ -6,7 +6,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 for arch in arm64 x86_64; do
   xcrun swiftc -O -parse-as-library -swift-version 5 -sdk "$sdk" -target "${arch}-apple-macosx14.0" \
-    "$REPO_ROOT/src/menubar/WatchDog.swift" "$REPO_ROOT/src/menubar/PanelGeometry.swift" -o "$REPO_ROOT/build/WatchDog-$arch"
+    "$REPO_ROOT/src/menubar/WatchDog.swift" "$REPO_ROOT/src/menubar/Activity.swift" "$REPO_ROOT/src/menubar/PanelGeometry.swift" -o "$REPO_ROOT/build/WatchDog-$arch"
 done
 xcrun lipo -create "$REPO_ROOT/build/WatchDog-arm64" "$REPO_ROOT/build/WatchDog-x86_64" -output "$app/Contents/MacOS/WatchDog"
 "$PYTHON_BIN" -I - "$app" "$REPO_ROOT/VERSION" <<'PY'

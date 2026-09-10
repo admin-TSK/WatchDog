@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 — 2026-09-10
+
+- Resolve historical session timeouts only after the guard confirms a successful native session lookup.
+- Keep resolved warnings in expandable history and exports, excluding them from unread counts and notifications.
+- Added recovery, restart, and activity-filter regression tests.
+
 ## 0.2.1 — 2026-09-10
 
 - Replaced recurring system-wide ps commands with native macOS process metadata queries in the guard and activity reader.

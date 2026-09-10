@@ -61,7 +61,9 @@ def parse_event(line, identity, observed, historical=False):
         detail = ('Session scan timed out; permission checks continued.'
                   if 'continue independently' in line else
                   'The logged-in session scan exceeded 10 seconds and was skipped.')
-        event.update(kind='warning', title='Session check timed out', detail=detail)
+        event.update(kind='warning', code='session_scan_timeout', title='Session check timed out', detail=detail)
+    elif line == 'Session discovery healthy: native process lookup.':
+        event.update(kind='recovery', code='session_scan_timeout')
     elif 'PROTECTION ERROR:' in line or line.startswith(('Cannot kill PID ', 'Cannot pause PID ', 'Process enumeration failed')):
         event.update(kind='error', title='A protection action failed', detail='Review the administrator log for details.')
     else:
@@ -77,6 +79,16 @@ class Feed:
         self.process_total = saved.get('process_total', 0)
         self.action_total = saved.get('action_total', 0)
         self.parser_version = saved.get('parser_version', 1)
+        self.session_recovered_at = saved.get('session_recovered_at')
+
+    def resolve_session_warnings(self):
+        if self.session_recovered_at is None:
+            return
+        for event in self.events:
+            if (event.get('code') == 'session_scan_timeout' and
+                    event.get('timestamp') is not None and
+                    event['timestamp'] <= self.session_recovered_at):
+                event.setdefault('resolved_at', self.session_recovered_at)
 
     def reclassify(self, path):
         # Re-read retained raw entries to correct old generic labels, keeping IDs,
@@ -94,14 +106,16 @@ class Feed:
                 if not line or not line.endswith(b'\n'): break
                 event = parse_event(line.decode('utf-8', errors='replace').strip(),
                                     f'{signature}:{start}', 0, historical=True)
+                if event and event['kind'] == 'recovery' and event['timestamp'] is not None:
+                    self.session_recovered_at = max(self.session_recovered_at or 0, event['timestamp'])
                 if event and event['id'] in by_id:
                     original = by_id[event['id']]
-                    original.update(kind=event['kind'], title=event['title'], detail=event['detail'])
-        self.parser_version = 2
+                    original.update({key: event[key] for key in ('kind', 'title', 'detail', 'code') if key in event})
+        self.parser_version = 3
 
     def read(self, path, now):
         try:
-            if self.parser_version < 2:
+            if self.parser_version < 3:
                 self.reclassify(path)
             with open(path, 'rb') as stream:
                 stat = os.fstat(stream.fileno())
@@ -124,16 +138,22 @@ class Feed:
                     line = data.decode('utf-8', errors='replace').strip()
                     event = parse_event(line, f'{signature}:{start}', now, historical)
                     if event:
-                        self.events.append(event)
-                        self.events = self.events[-MAX_EVENTS:]
-                        self.action_total += 1
-                        self.process_total += int(event['kind'] == 'process')
+                        if event['kind'] == 'recovery':
+                            if event['timestamp'] is not None:
+                                self.session_recovered_at = max(self.session_recovered_at or 0, event['timestamp'])
+                        else:
+                            self.events.append(event)
+                            self.events = self.events[-MAX_EVENTS:]
+                            self.action_total += 1
+                            self.process_total += int(event['kind'] == 'process')
                 self.cursor = {'inode': signature, 'offset': stream.tell()}
+                self.resolve_session_warnings()
         except FileNotFoundError:
             pass
 
     def saved(self):
-        return {'parser_version': self.parser_version, 'events': self.events, 'cursor': self.cursor, 'process_total': self.process_total, 'action_total': self.action_total}
+        return {'parser_version': self.parser_version, 'session_recovered_at': self.session_recovered_at,
+                'events': self.events, 'cursor': self.cursor, 'process_total': self.process_total, 'action_total': self.action_total}
 
 
 def health(config):

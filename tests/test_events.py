@@ -11,6 +11,38 @@ events = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(events)
 
 class EventTests(unittest.TestCase):
+    def test_only_confirmed_recovery_resolves_earlier_session_warnings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'log'
+            warning = "PROTECTION ERROR: TimeoutExpired(('/bin/ps', '-axo', 'uid=,comm='), 10)"
+            path.write_text('2026-09-10 09:00:00 ' + warning + '\n2026-09-10 09:00:01 PROTECTION ERROR: Could not disable job\n')
+            feed = events.Feed()
+            feed.read(path, 1)
+            self.assertNotIn('resolved_at', feed.events[0])
+            with path.open('a') as stream:
+                stream.write('2026-09-10 09:00:02 Session discovery healthy: native process lookup.\n')
+            # An older reader may have advanced past the unfamiliar recovery line
+            # while the guard and reader were being upgraded separately.
+            old_saved = feed.saved()
+            old_saved['parser_version'] = 2
+            old_saved['cursor'] = {**old_saved['cursor'], 'offset': path.stat().st_size}
+            migrated = events.Feed(old_saved)
+            migrated.read(path, 2)
+            self.assertIn('resolved_at', migrated.events[0])
+            feed.read(path, 2)
+            self.assertIn('resolved_at', feed.events[0])
+            self.assertNotIn('resolved_at', feed.events[1])
+            self.assertEqual(feed.action_total, 2)
+            original_id = feed.events[0]['id']
+            restored = events.Feed(feed.saved())
+            with path.open('a') as stream:
+                stream.write('2026-09-10 09:00:03 ' + warning + '\n')
+            restored.read(path, 3)
+            self.assertEqual(restored.events[0]['id'], original_id)
+            self.assertIn('resolved_at', restored.events[0])
+            self.assertNotIn('resolved_at', restored.events[-1])
+            self.assertEqual(restored.action_total, 3)
+
     def test_timeout_history_is_reclassified_without_replay(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'log'

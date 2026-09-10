@@ -16,6 +16,21 @@ spec.loader.exec_module(guard)
 
 
 class PollingTests(unittest.TestCase):
+    def test_session_recovery_is_logged_only_after_success(self):
+        with patch.object(guard, 'SESSION_LOOKUP_HEALTHY', False), \
+             patch.object(guard.processes, 'login_uids', side_effect=[{501}, {501}, OSError('lookup failed'), {501}]), \
+             patch.object(Path, 'glob', return_value=[]), \
+             patch.object(guard, 'log') as log:
+            guard.jobs()
+            guard.jobs()
+            self.assertEqual(log.call_count, 1)
+            with self.assertRaises(OSError):
+                guard.jobs()
+            self.assertEqual(log.call_count, 1)
+            guard.jobs()
+            self.assertEqual(log.call_count, 2)
+            self.assertIn('Session discovery healthy', log.call_args.args[0])
+
     def test_reactivation_and_replacement_during_stalled_background_check(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -18,6 +18,7 @@ PERMISSION_INTERVAL = 0.2
 BACKGROUND_INTERVAL = 2.0
 STATE_LOCK = threading.RLock()
 BASE_EXECUTABLES = {Path('/usr/local/jamf/bin/jamf'), Path('/usr/local/jamf/bin/jamfAgent')}
+SESSION_LOOKUP_HEALTHY = False
 
 def log(message):
     print(time.strftime('%Y-%m-%d %H:%M:%S'), message, flush=True)
@@ -98,9 +99,17 @@ def job_label(label):
                       'com.jamfsoftware.startupItem', 'com.jamfsoftware.jamf.daemon'})
 
 def jobs():
+    global SESSION_LOOKUP_HEALTHY
     result = {('system', 'com.jamfsoftware.task.1'): (None, False),
               ('system', 'com.jamf.management.daemon'): (None, False)}
-    uids = processes.login_uids()
+    try:
+        uids = processes.login_uids()
+    except Exception:
+        SESSION_LOOKUP_HEALTHY = False
+        raise
+    if not SESSION_LOOKUP_HEALTHY:
+        log('Session discovery healthy: native process lookup.')
+        SESSION_LOOKUP_HEALTHY = True
     scans = [(Path('/Library/LaunchDaemons'), ['system']),
              (Path('/Library/LaunchAgents'), [f'gui/{u}' for u in uids if u >= 500])]
     for folder, domains in scans:
