@@ -80,6 +80,8 @@ def install():
     (PRIVATE / 'targets.py').chmod(0o600)
     shutil.copyfile(REPO / 'src/shields.py', PRIVATE / 'shields.py')
     (PRIVATE / 'shields.py').chmod(0o600)
+    shutil.copyfile(REPO / 'src/network.py', PRIVATE / 'network.py')
+    (PRIVATE / 'network.py').chmod(0o600)
     python = str(Path(sys.executable).resolve())
     manage.write_runner(PRIVATE / 'run-events', 'event_bridge.py', manage.python_fallbacks(python))
     (PRIVATE / 'config.json').write_text(json.dumps(config))
@@ -102,6 +104,7 @@ def install():
     stop_app()
     if APPLICATION.exists(): shutil.rmtree(APPLICATION)
     temporary.rename(APPLICATION)
+    stamp_app_icon(APPLICATION)
     command('/bin/launchctl', 'enable', f'system/{LABEL}')
     # launchd can briefly reject bootstrap while the old job is still being removed.
     for attempt in range(5):
@@ -112,6 +115,23 @@ def install():
             raise RuntimeError('Could not start the activity reader: ' + loaded.stderr.strip())
         time.sleep(1)
     print('WatchDog menu bar companion installed. The existing guard was not restarted or changed.')
+
+
+def stamp_app_icon(app):
+    """Register the opaque WatchDog mark so Notification Center can find it."""
+    icns = Path(app) / 'Contents/Resources/WatchDog.icns'
+    if not icns.is_file():
+        return
+    js = (
+        'ObjC.import("AppKit");'
+        f'var img=$.NSImage.alloc.initWithContentsOfFile({json.dumps(str(icns))});'
+        f'$.NSWorkspace.sharedWorkspace.setIconForFileOptions(img,{json.dumps(str(app))},0);'
+    )
+    command('/usr/bin/osascript', '-l', 'JavaScript', '-e', js, check=False)
+    lsregister = Path('/System/Library/Frameworks/CoreServices.framework/'
+                      'Frameworks/LaunchServices.framework/Support/lsregister')
+    if lsregister.exists():
+        command(str(lsregister), '-f', str(app), check=False)
 
 
 def login(enable):
@@ -146,7 +166,7 @@ def remove():
         if not known_app(APPLICATION): raise RuntimeError('Refusing to remove a different WatchDog application.')
         shutil.rmtree(APPLICATION)
     PLIST.unlink(missing_ok=True)
-    for name in ('event_bridge.py', 'processes.py', 'targets.py', 'shields.py', 'run-events', 'config.json', 'feed-state.json', 'feed-state.tmp'):
+    for name in ('event_bridge.py', 'processes.py', 'targets.py', 'shields.py', 'network.py', 'run-events', 'config.json', 'feed-state.json', 'feed-state.tmp'):
         (PRIVATE / name).unlink(missing_ok=True)
     if PRIVATE.exists(): PRIVATE.rmdir()
     requests = PUBLIC / 'requests'

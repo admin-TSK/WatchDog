@@ -15,6 +15,7 @@ def _load(name):
 processes = _load('processes')
 targets = _load('targets')
 shields = _load('shields')
+network = _load('network')
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / 'state.json'
@@ -36,6 +37,7 @@ CONFIG = {
     'sticky_block': False,
     'match_signature': False,
     'block_connect': False,
+    'network': 'off',
 }
 
 def log(message):
@@ -57,6 +59,8 @@ def load_config():
                 config[key] = cast(data[key])
             except (TypeError, ValueError):
                 pass
+    if data.get('network') in shields.NETWORK_MODES:
+        config['network'] = data['network']
     if config['permission_interval'] < 0.05:
         config['permission_interval'] = 0.05
     if config['background_interval'] < 0.5:
@@ -90,6 +94,11 @@ def refresh_shields():
                     log(f'Shield {key} {"on" if current[key] else "off"}.')
                     if key == 'connect' and current[key]:
                         log(targets.CONNECT_WARNING)
+            if previous.get('network') != current.get('network'):
+                mode = current.get('network', 'off')
+                log(f'Network {mode.title()}.')
+                if mode == 'yeet':
+                    log(network.YEET_WARNING)
         else:
             SHIELDS_READY = True
         SHIELDS = current
@@ -110,6 +119,9 @@ def load_state():
     state.setdefault('flags', {})
     if not isinstance(state['flags'], dict):
         state['flags'] = {}
+    state.setdefault('pf', {})
+    if not isinstance(state['pf'], dict):
+        state['pf'] = {}
     state['version'] = STATE_VERSION
     return state
 
@@ -303,7 +315,37 @@ def restore_jobs(state):
 
 
 def restore(state):
-    return restore_modes(state) + restore_jobs(state)
+    failures = restore_modes(state) + restore_jobs(state)
+    failures.extend(sync_network('off', state))
+    return failures
+
+
+def sync_network(mode, state, announce=True):
+    try:
+        failures, _commands = network.sync(mode, ROOT, state, policy_path=ROOT / 'network_policy.json')
+    except (OSError, ValueError, TypeError) as error:
+        return [str(error)]
+    messages = [item for item in failures if item]
+    try:
+        save_state(state)
+    except OSError as error:
+        messages.append(f'Could not save network undo record: {error}')
+    if announce and mode in ('on', 'yeet') and not messages:
+        log('Network rules loaded.')
+        if network.read_status(ROOT).get('stale'):
+            log('Network resolution failed.')
+    return messages
+
+
+def should_sync_network(mode, applied, last_network, now, interval=60):
+    """Apply when the shield mode differs from the last PF sync, or when DNS refresh is due.
+
+    refresh_shields() can be consumed by the permission loop, so this compares
+    against the last mode this thread actually loaded into PF.
+    """
+    changed = applied != mode
+    refresh = mode != 'off' and last_network > 0 and now - last_network >= interval
+    return changed or refresh, changed
 
 
 def clear_sticky(state):
@@ -327,6 +369,8 @@ class BackgroundChecks(threading.Thread):
         self.path_lock = threading.Lock()
         self.cached_paths = sorted(initial_paths if initial_paths is not None else
                                    BASE_EXECUTABLES | {Path(p) for p in state['modes']})
+        self.last_network = 0.0
+        self.applied_network = 'off'
 
     def paths(self):
         with self.path_lock:
@@ -351,6 +395,14 @@ class BackgroundChecks(threading.Thread):
                 if previous.get('sticky') and not current['sticky']:
                     for failure in clear_sticky(self.state):
                         log('PROTECTION ERROR: ' + failure)
+                mode = current.get('network', 'off')
+                needed, announce = should_sync_network(
+                    mode, self.applied_network, self.last_network, time.monotonic())
+                if needed:
+                    for failure in sync_network(mode, self.state, announce=announce):
+                        log('PROTECTION ERROR: ' + failure)
+                    self.last_network = time.monotonic()
+                    self.applied_network = mode
             except subprocess.TimeoutExpired as error:
                 log('PROTECTION ERROR: Background status check timed out; permission checks continue independently. ' + repr(error))
             except Exception as error:
@@ -456,6 +508,8 @@ def main():
         refresh_shields()
         if CONFIG['block_connect']:
             log(targets.CONNECT_WARNING)
+        if SHIELDS.get('network') == 'yeet':
+            log(network.YEET_WARNING)
         supervise()
         if '--once' in sys.argv:
             failures = []
@@ -463,9 +517,19 @@ def main():
                 failures.extend(block_modes(state, executables()))
             if SHIELDS['jobs']:
                 failures.extend(block_jobs(state))
+            failures.extend(sync_network(
+                SHIELDS.get('network', 'off'), state,
+                announce=SHIELDS.get('network', 'off') != 'off'))
             for failure in failures: log('PROTECTION ERROR: ' + failure)
             return bool(failures)
+        for failure in sync_network(
+                SHIELDS.get('network', 'off'), state,
+                announce=SHIELDS.get('network', 'off') != 'off'):
+            log('PROTECTION ERROR: ' + failure)
         background = BackgroundChecks(state, stop_event)
+        background.applied_network = SHIELDS.get('network', 'off')
+        if background.applied_network != 'off':
+            background.last_network = time.monotonic()
         background.start()
         log(f'Permission checks: {int(PERMISSION_INTERVAL * 1000)} ms; background discovery/job checks: {BACKGROUND_INTERVAL:g} seconds; process monitor: {MONITOR_INTERVAL_MS} ms.')
         run_permission_checks(state, background, stop_event, supervise)

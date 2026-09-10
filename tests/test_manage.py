@@ -118,7 +118,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('Menu bar app:', text)
         self.assertIn('Tracked executables: 1', text)
         self.assertIn('Jamf Connect blocking: False', text)
-        self.assertIn('MDM enrollment is outside WatchDog’s scope.', text)
+        self.assertIn('MDM enrollment stays intact. Network On/Yeet can deny check-in.', text)
 
     def test_status_reports_live_shields(self):
         root, plist, label, python = self.fixture()

@@ -1,5 +1,31 @@
 import SwiftUI
 
+struct NetworkStatus: Decodable, Equatable {
+    var mode: String
+    var anchorLoaded: Bool
+    var resolvedCount: Int
+    var partial: [String]
+    var stale: [String]
+    var pfEnabled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case mode, partial, stale
+        case anchorLoaded = "anchor_loaded"
+        case resolvedCount = "resolved_count"
+        case pfEnabled = "pf_enabled"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "off"
+        anchorLoaded = try container.decodeIfPresent(Bool.self, forKey: .anchorLoaded) ?? false
+        resolvedCount = try container.decodeIfPresent(Int.self, forKey: .resolvedCount) ?? 0
+        partial = try container.decodeIfPresent([String].self, forKey: .partial) ?? []
+        stale = try container.decodeIfPresent([String].self, forKey: .stale) ?? []
+        pfEnabled = try container.decodeIfPresent(Bool.self, forKey: .pfEnabled) ?? false
+    }
+}
+
 struct ShieldState: Decodable, Equatable {
     var permissions: Bool
     var jobs: Bool
@@ -7,21 +33,23 @@ struct ShieldState: Decodable, Equatable {
     var sticky: Bool
     var signatures: Bool
     var connect: Bool
+    var network: String
 
     static let coreOn = ShieldState(permissions: true, jobs: true, monitor: true,
-                                    sticky: false, signatures: false, connect: false)
+                                    sticky: false, signatures: false, connect: false, network: "off")
 
     enum CodingKeys: String, CodingKey {
-        case permissions, jobs, monitor, sticky, signatures, connect
+        case permissions, jobs, monitor, sticky, signatures, connect, network
     }
 
-    init(permissions: Bool, jobs: Bool, monitor: Bool, sticky: Bool, signatures: Bool, connect: Bool) {
+    init(permissions: Bool, jobs: Bool, monitor: Bool, sticky: Bool, signatures: Bool, connect: Bool, network: String) {
         self.permissions = permissions
         self.jobs = jobs
         self.monitor = monitor
         self.sticky = sticky
         self.signatures = signatures
         self.connect = connect
+        self.network = network
     }
 
     init(from decoder: Decoder) throws {
@@ -32,6 +60,7 @@ struct ShieldState: Decodable, Equatable {
         sticky = try container.decodeIfPresent(Bool.self, forKey: .sticky) ?? false
         signatures = try container.decodeIfPresent(Bool.self, forKey: .signatures) ?? false
         connect = try container.decodeIfPresent(Bool.self, forKey: .connect) ?? false
+        network = try container.decodeIfPresent(String.self, forKey: .network) ?? "off"
     }
 
     func enabled(_ id: String) -> Bool {

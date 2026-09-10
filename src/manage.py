@@ -34,6 +34,15 @@ def env_flag(name):
     return os.environ.get(name, '').strip() in {'1', 'true', 'TRUE', 'yes', 'YES'}
 
 
+def env_network():
+    value = os.environ.get('WATCHDOG_NETWORK', '').strip().lower()
+    if value in {'on', 'yeet'}:
+        return value
+    if value in {'1', 'true', 'yes'}:
+        return 'on'
+    return 'off'
+
+
 def interpreter_volatile(path):
     text = str(path)
     return any(part in text for part in (
@@ -134,6 +143,7 @@ def install():
     sticky = env_flag('WATCHDOG_STICKY_BLOCK')
     match_signature = env_flag('WATCHDOG_MATCH_SIGNATURE')
     block_connect = env_flag('WATCHDOG_BLOCK_CONNECT')
+    network_mode = env_network()
     if interpreter_volatile(python):
         print(f'WatchDog: warning: {python} looks like a removable runtime. Fallbacks: {", ".join(fallbacks)}', file=sys.stderr)
     if block_connect:
@@ -141,6 +151,11 @@ def install():
         module = __import__('importlib.util').util.module_from_spec(spec)
         spec.loader.exec_module(module)
         print(module.CONNECT_WARNING, file=sys.stderr)
+    if network_mode == 'yeet':
+        spec = __import__('importlib.util').util.spec_from_file_location('watchdog_network', REPO / 'src' / 'network.py')
+        module = __import__('importlib.util').util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        print(module.YEET_WARNING, file=sys.stderr)
     ROOT.mkdir(mode=0o700)
     try:
         for source, name, mode in [
@@ -149,6 +164,8 @@ def install():
             (REPO / 'src' / 'processes.py', 'processes.py', 0o600),
             (REPO / 'src' / 'targets.py', 'targets.py', 0o600),
             (REPO / 'src' / 'shields.py', 'shields.py', 0o600),
+            (REPO / 'src' / 'network.py', 'network.py', 0o600),
+            (REPO / 'src' / 'network_policy.json', 'network_policy.json', 0o600),
         ]:
             destination = ROOT / name
             shutil.copyfile(source, destination)
@@ -168,6 +185,7 @@ def install():
             'sticky_block': sticky,
             'match_signature': match_signature,
             'block_connect': block_connect,
+            'network': network_mode,
         }
         (ROOT / 'installation.json').write_text(json.dumps(installation, indent=2))
         (ROOT / 'installation.json').chmod(0o600)
@@ -187,7 +205,8 @@ def install():
             if Path(path).exists() and not Path(path).is_symlink() and stat.S_IMODE(os.stat(path).st_mode) & 0o111:
                 raise RuntimeError(f'Execution permission remains on {path}')
         print('WatchDog installed and running. MDM enrollment is unchanged.')
-        print('Defaults: permission 100 ms, monitor 50 ms. Optional flags: WATCHDOG_STICKY_BLOCK, WATCHDOG_MATCH_SIGNATURE, WATCHDOG_BLOCK_CONNECT.')
+        print('Defaults: permission 100 ms, monitor 50 ms. Network Off unless WATCHDOG_NETWORK=on|yeet.')
+        print('Optional flags: WATCHDOG_STICKY_BLOCK, WATCHDOG_MATCH_SIGNATURE, WATCHDOG_BLOCK_CONNECT, WATCHDOG_NETWORK.')
     except BaseException:
         run('/bin/launchctl', 'bootout', f'system/{LABEL}', check=False)
         if (ROOT / 'state.json').exists():
@@ -229,13 +248,39 @@ def uninstall():
         shutil.copyfile(state, backup)
         backup.chmod(0o600)
         print(f'Undo record preserved: {backup}')
+    _flush_network(root, python)
     plist.unlink(missing_ok=True)
     NEWSYSLOG.unlink(missing_ok=True)
     for name in ('watchdog', 'jamf-test-blocker', 'guard.py', 'processes.py', 'targets.py', 'shields.py',
+                 'network.py', 'network_policy.json', 'network-status.json', 'pf.anchor',
                  'run-guard', 'state.json', 'state.tmp', 'installation.json', 'shields.json'):
         (root / name).unlink(missing_ok=True)
     root.rmdir()
     print('WatchDog removed. Recorded settings restored; MDM enrollment unchanged.')
+
+
+def _flush_network(root, python):
+    """Strip WatchDog PF even if --restore did not run or network.py is already gone."""
+    if os.geteuid() != 0:
+        return
+    script = Path(root) / 'network.py'
+    source = script if script.is_file() else REPO / 'src' / 'network.py'
+    if not source.is_file():
+        return
+    spec = __import__('importlib.util').util.spec_from_file_location('watchdog_network_flush', source)
+    module = __import__('importlib.util').util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    state_path = Path(root) / 'state.json'
+    try:
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    except (OSError, ValueError, TypeError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    failures, commands = module.flush(root, state, force=True)
+    del commands
+    for failure in failures:
+        print(f'WatchDog: {failure}', file=sys.stderr)
 
 
 def status():
@@ -273,13 +318,15 @@ def status():
         print(f'Sticky block: {info.get("sticky_block", False)}')
         print(f'Signature matching: {info.get("match_signature", False)}')
         print(f'Jamf Connect blocking: {info.get("block_connect", False)}')
+        print(f'Network: {info.get("network", "off")}')
     shields_path = root / 'shields.json'
     if shields_path.exists():
         try:
             live = json.loads(shields_path.read_text())
             print('Shields: ' + ', '.join(
                 f'{key}={"on" if live.get(key) else "off"}'
-                for key in ('permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect')))
+                for key in ('permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect'))
+                + f', network={live.get("network", "off")}')
         except (OSError, ValueError, TypeError):
             print('Shields: unreadable')
     state_path = root / 'state.json'
@@ -302,7 +349,7 @@ def status():
     else:
         print('Activity snapshot: absent')
     print(f'Undo state: {state_path}')
-    print('MDM enrollment is outside WatchDog’s scope.')
+    print('MDM enrollment stays intact. Network On/Yeet can deny check-in.')
 
 
 def main():

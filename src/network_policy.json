@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "groups": [
+    {
+      "id": "jamf-management",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": [],
+      "cidrs": [],
+      "discover": "management"
+    },
+    {
+      "id": "jamf-remote-assist",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": ["*.jra.services.jamfcloud.com"],
+      "cidrs": []
+    },
+    {
+      "id": "jamf-app-installers",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": ["appinstallers-packages.services.jamfcloud.com"],
+      "cidrs": []
+    },
+    {
+      "id": "jamf-sentry",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": ["sentry.pub.jamf.build"],
+      "cidrs": []
+    },
+    {
+      "id": "apns",
+      "modes": ["yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [5223, 443],
+      "hosts": ["*.push.apple.com"],
+      "cidrs": [
+        "17.249.0.0/16",
+        "17.252.0.0/16",
+        "17.57.144.0/22",
+        "17.188.128.0/18",
+        "17.188.20.0/23",
+        "2620:149:a44::/48",
+        "2403:300:a42::/48",
+        "2403:300:a51::/48",
+        "2a01:b740:a42::/48"
+      ]
+    },
+    {
+      "id": "apple-enrollment",
+      "modes": ["yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": [
+        "deviceenrollment.apple.com",
+        "iprofiles.apple.com",
+        "mdmenrollment.apple.com",
+        "axm-servicediscovery.apple.com"
+      ],
+      "cidrs": []
+    },
+    {
+      "id": "jcds-us-all-regions",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": [
+        "jcds.use1.inf.jamf.one",
+        "d3vkdkwvc3vitl.cloudfront.net",
+        "us-east-1-prod-jcds2-file-objects.s3.amazonaws.com",
+        "us-east-1-prod-jcds2-file-objects.s3.us-east-1.amazonaws.com"
+      ],
+      "cidrs": []
+    },
+    {
+      "id": "jcds-eu-central-1",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": [
+        "jcds.euc1.inf.jamf.one",
+        "d1590uekmzbnci.cloudfront.net",
+        "eu-central-1-prod-jcds2-file-objects.s3.amazonaws.com",
+        "eu-central-1-prod-jcds2-file-objects.s3.eu-central-1.amazonaws.com"
+      ],
+      "cidrs": []
+    },
+    {
+      "id": "jcds-eu-west-2",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": [
+        "jcds.euw2.inf.jamf.one",
+        "d2zt4v5bo59xg8.cloudfront.net",
+        "eu-west-2-prod-jcds2-file-objects.s3.amazonaws.com",
+        "eu-west-2-prod-jcds2-file-objects.s3.eu-west-2.amazonaws.com"
+      ],
+      "cidrs": []
+    },
+    {
+      "id": "jcds-ap-southeast-2",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": [
+        "jcds.apse2.inf.jamf.one",
+        "d3zqyxnkgrm1p.cloudfront.net",
+        "ap-southeast-2-prod-jcds2-file-objects.s3.amazonaws.com",
+        "ap-southeast-2-prod-jcds2-file-objects.s3.ap-southeast-2.amazonaws.com"
+      ],
+      "cidrs": []
+    },
+    {
+      "id": "jcds-ap-northeast-1",
+      "modes": ["on", "yeet"],
+      "direction": "out",
+      "transport": "tcp",
+      "ports": [443],
+      "hosts": [
+        "jcds.apne1.inf.jamf.one",
+        "d1keoc0lihzxgs.cloudfront.net",
+        "ap-northeast-1-prod-jcds2-file-objects.s3.amazonaws.com",
+        "ap-northeast-1-prod-jcds2-file-objects.s3.ap-northeast-1.amazonaws.com"
+      ],
+      "cidrs": []
+    }
+  ]
+}

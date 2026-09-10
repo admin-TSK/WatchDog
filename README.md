@@ -4,9 +4,9 @@
 
 Reversible **local Jamf control** for enrolled macOS test machines. WatchDog can block the Jamf Pro framework, Self Service, and App Installers on the Mac. MDM enrollment stays intact. Jamf Connect blocking is optional and off by default.
 
-> **Experimental.** This is a test utility, not a security boundary. It interrupts inventory, policies, Self Service, and App Installers that depend on local binaries. It does not freeze the disk, and it does not stop commands that arrive through MDM. Polling has a CPU cost. It is not kernel execution denial.
+> **Experimental.** This is a test utility, not a security boundary. It interrupts inventory, policies, Self Service, and App Installers that depend on local binaries. It does not freeze the disk. Network On/Yeet can deny check-in and Jamf cloud fetches; Yeet also disrupts Apple push. Polling has a CPU cost. It is not kernel execution denial.
 
-**0.3.1** · macOS 14+ · independent of Jamf · [changelog](CHANGELOG.md) · [architecture](docs/architecture.md) · [security](SECURITY.md)
+**0.4.0** · macOS 14+ · independent of Jamf · [changelog](CHANGELOG.md) · [architecture](docs/architecture.md) · [security](SECURITY.md)
 
 ## Quick start
 
@@ -38,6 +38,7 @@ Optional flags, all off by default at install. The Shields tab can later toggle 
 ```sh
 WATCHDOG_STICKY_BLOCK=1 WATCHDOG_MATCH_SIGNATURE=1 ./install.sh
 WATCHDOG_BLOCK_CONNECT=1 ./install.sh   # can lock users out of Connect logins
+WATCHDOG_NETWORK=on ./install.sh        # outbound Jamf/MDM filter; Yeet also blocks APNs
 ```
 
 Read the Connect warning in [SECURITY.md](SECURITY.md) before enabling that flag.
@@ -46,10 +47,11 @@ Read the Connect warning in [SECURITY.md](SECURITY.md) before enabling that flag
 
 | In | Out |
 | --- | --- |
-| Local Jamf Pro framework, including `jamf`, `jamfHelper`, and Management Action | MDM enrollment, profiles, and the MDM command channel |
+| Local Jamf Pro framework, including `jamf`, `jamfHelper`, and Management Action | MDM enrollment and configuration profiles |
 | Self Service and Jamf App Installers | Jamf Protect |
 | Optional Jamf Connect app/agents (`WATCHDOG_BLOCK_CONNECT=1`) | Login-window plugins and `authorizationdb` |
-| Reversible undo record of modes, flags, and launch jobs | `jamfcheck`, Jamf Compliance Editor, AppAutoPatch |
+| Optional outbound Network filter (Off / On / Yeet) | `jamfcheck`, Jamf Compliance Editor, AppAutoPatch |
+| Reversible undo record of modes, flags, launch jobs, and WatchDog PF rules | Absolute coverage against VPN, proxies, or future custom endpoints |
 
 Uninstall restores what WatchDog recorded. Root, MDM, or an updater can reverse it while it is installed. Details: [architecture](docs/architecture.md).
 
@@ -67,6 +69,7 @@ Shields shows one tile per control. Toggle any layer independently:
 | Sticky block | Off | `UF_IMMUTABLE` after stripping execute |
 | Signatures | Off | Match Jamf code-signing IDs in the monitor |
 | Jamf Connect | Off | Optional Connect app/agents; confirm before enabling |
+| Network | Off | Off / On / Yeet outbound filter. On denies Jamf/MDM destinations. Yeet also blocks APNs (confirm). |
 
 Turning a core shield off reverses that layer. Enabling Connect can lock the login window on Macs that use it; WatchDog still never rewrites `authorizationdb`.
 
@@ -82,6 +85,7 @@ Quit the menu bar to close the interface only. Protection keeps running.
 | Permissions | Strip execute bits at known paths, including replacements | ~100 ms |
 | Discovery | Find new executables under Jamf support folders and apps | ~2 s |
 | Process monitor | Pause and kill matching processes, children, and group helpers | ~50 ms |
+| Network | Outbound PF deny to discovered Jamf/MDM hosts (On) plus APNs/enrollment (Yeet) | On change, then ~60 s DNS refresh |
 | Recovery | Record original modes, flags, and job states | Before each first change |
 | Supervision | Restart the monitor; start the guard at boot | launchd + guard |
 

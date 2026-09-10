@@ -8,11 +8,13 @@ import Foundation
         precondition(state.jobs)
         precondition(state.sticky)
         precondition(!state.connect)
+        precondition(state.network == "off")
         precondition(!state.enabled("permissions"))
         precondition(state.enabled("sticky"))
         let empty = try JSONDecoder().decode(ShieldState.self, from: Data("{}".utf8))
         precondition(empty.permissions && empty.jobs && empty.monitor)
         precondition(!empty.sticky && !empty.signatures && !empty.connect)
+        precondition(empty.network == "off")
         print("PASS: shield state defaults and toggles decode.")
     }
 }

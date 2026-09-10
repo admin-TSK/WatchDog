@@ -123,6 +123,53 @@ class EventTests(unittest.TestCase):
             restored.read(path, 45)
             self.assertEqual(restored.action_total, 3)
 
+    def test_hostname_partial_is_dropped_on_feed_upgrade(self):
+        self.assertIsNone(events.parse_event('Network hostname partial.', 'h', 42))
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'log'
+            path.write_text('2026-09-10 14:36:29 Network rules loaded.\n')
+            feed = events.Feed()
+            feed.read(path, 1)
+            saved = feed.saved()
+            saved['parser_version'] = 3
+            saved['events'].insert(0, {
+                'id': 'oldpartial', 'timestamp': 1, 'kind': 'warning',
+                'title': 'Network hostname partial',
+                'detail': 'A wildcard could not be expanded; IP approximation is incomplete.',
+            })
+            upgraded = events.Feed(saved)
+            upgraded.read(path, 2)
+            self.assertEqual([event['title'] for event in upgraded.events], ['Network rules loaded'])
+            self.assertEqual(upgraded.parser_version, 5)
+            self.assertEqual(upgraded.action_total, 1)
+
+    def test_packet_filter_token_error_is_named_and_reclassified(self):
+        raw = 'PROTECTION ERROR: /sbin/pfctl: option requires an argument -- X'
+        event = events.parse_event(raw, 'x', 42)
+        self.assertEqual(event['kind'], 'error')
+        self.assertEqual(event['title'], 'Packet filter token missing')
+        self.assertNotIn('/sbin', str(event))
+        missing = events.parse_event(
+            'PROTECTION ERROR: Could not release the packet filter enable token because it was not recorded',
+            'y', 42)
+        self.assertEqual(missing['title'], 'Packet filter token missing')
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'log'
+            path.write_text('2026-09-10 15:02:23 ' + raw + '\n')
+            feed = events.Feed()
+            feed.read(path, 1)
+            saved = feed.saved()
+            saved['parser_version'] = 4
+            saved['events'][0].update(title='A protection action failed',
+                                      detail='Review the administrator log for details.')
+            original_id = saved['events'][0]['id']
+            upgraded = events.Feed(saved)
+            upgraded.read(path, 2)
+            self.assertEqual(upgraded.events[0]['id'], original_id)
+            self.assertEqual(upgraded.events[0]['title'], 'Packet filter token missing')
+            self.assertEqual(upgraded.parser_version, 5)
+            self.assertEqual(upgraded.action_total, 1)
+
     def test_heal_guard_is_rate_limited(self):
         config = {'guard_label': 'test.guard'}
         with patch.object(events.subprocess, 'run') as command, patch.object(Path, 'exists', return_value=True):

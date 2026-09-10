@@ -29,6 +29,7 @@ class ShieldTests(unittest.TestCase):
         self.assertTrue(data['permissions'])
         self.assertTrue(data['sticky'])
         self.assertFalse(data['connect'])
+        self.assertEqual(data['network'], 'off')
         data = shields.apply(data, {'id': 'monitor', 'enabled': False})
         self.assertFalse(data['monitor'])
         self.assertTrue(data['permissions'])
@@ -102,6 +103,41 @@ class ShieldTests(unittest.TestCase):
                 stop.set()
                 guard.SHIELDS = dict(shields.DEFAULTS)
                 guard.SHIELDS_READY = False
+
+    def test_network_refresh_does_not_log_expected_partial(self):
+        status = {'partial': ['jamf-remote-assist'], 'stale': []}
+        with patch.object(guard.network, 'sync', return_value=([], [])), \
+             patch.object(guard.network, 'read_status', return_value=status), \
+             patch.object(guard, 'save_state'), \
+             patch.object(guard, 'log') as logged:
+            self.assertEqual(guard.sync_network('on', {}, announce=True), [])
+            self.assertEqual(guard.sync_network('on', {}, announce=False), [])
+        messages = [call.args[0] for call in logged.call_args_list]
+        self.assertEqual(messages.count('Network rules loaded.'), 1)
+        self.assertNotIn('Network hostname partial.', messages)
+        stale = {'partial': ['jamf-remote-assist'], 'stale': ['missing.example']}
+        with patch.object(guard.network, 'sync', return_value=([], [])), \
+             patch.object(guard.network, 'read_status', return_value=stale), \
+             patch.object(guard, 'save_state'), \
+             patch.object(guard, 'log') as logged:
+            self.assertEqual(guard.sync_network('on', {}, announce=True), [])
+        self.assertIn('Network resolution failed.', [call.args[0] for call in logged.call_args_list])
+
+    def test_network_sync_follows_applied_mode_not_refresh_edge(self):
+        now = 1000.0
+        needed, announce = guard.should_sync_network('on', 'off', 0.0, now)
+        self.assertTrue(needed)
+        self.assertTrue(announce)
+        needed, announce = guard.should_sync_network('on', 'on', now, now)
+        self.assertFalse(needed)
+        needed, announce = guard.should_sync_network('on', 'on', now, now + 60)
+        self.assertTrue(needed)
+        self.assertFalse(announce)
+        needed, announce = guard.should_sync_network('off', 'on', now, now)
+        self.assertTrue(needed)
+        self.assertTrue(announce)
+        needed, announce = guard.should_sync_network('off', 'off', 0.0, now)
+        self.assertFalse(needed)
 
 
 if __name__ == '__main__':

@@ -19,7 +19,7 @@ A separate root LaunchDaemon runs `event_bridge.py` through `run-events`. It rea
 
 The event reader's code and cursor state are private to root. Its public directory is root-owned mode `0755`, and the snapshot is mode `0644`. Other local users can read the same limited activity feed: event categories, framework executable names or job labels, timestamps, PIDs, and counts. It exposes no original file paths, enrollment information, credentials, or raw error details.
 
-The menu bar cannot write the guard's undo record or the activity feed. It can change runtime shields by dropping `{id, enabled}` JSON into `/Library/Application Support/WatchDog Status/requests/` (mode `1777`). The root event reader applies only known shield keys into the guard's `shields.json`. Any local account that can write that drop folder can toggle WatchDog's local controls. The feed itself stays read-only.
+The menu bar cannot write the guard's undo record or the activity feed. It can change runtime shields by dropping `{id, enabled}` JSON into `/Library/Application Support/WatchDog Status/requests/` (mode `1777`), or `{id: "network", mode: "off"|"on"|"yeet"}` for the outbound filter. The root event reader applies only known shield keys into the guard's `shields.json`. Any local account that can write that drop folder can toggle WatchDog's local controls. The feed itself stays read-only.
 
 Only recognized log messages become events. Existing history is imported from at most the last 256 KiB of log data. Up to 100 events remain visible. Native process-stop lines without timestamps are marked “Earlier” when imported; new untimestamped lines use the time the reader observed them. Cursor and event state survive restarts, and log rotation is recognized by file identity or truncation. Historical events are not replayed as new notifications. Logs are rotated by `/etc/newsyslog.d/local.watchdog.conf`.
 
@@ -45,8 +45,8 @@ If this Mac uses Jamf Connect at the login window, enabling this flag can lock u
 
 ## What remains outside the boundary
 
-- MDM enrollment, configuration profiles, and the independent MDM command channel.
-- Root processes that restore permissions, replace binaries, or remove WatchDog.
+- MDM enrollment and configuration profiles. Network On/Yeet can deny check-in and Jamf cloud fetches; Yeet also denies published APNs ranges. VPN/proxy can bypass. A loaded PF rule is not a confirmed deny. The Remote Assist wildcard cannot be expanded into PF addresses; that expected gap is recorded as `partial` and is not treated as a protection error. The PF enable token from `pfctl -E` is stored only in the root undo record and passed to `pfctl -X` on Off; WatchDog never calls bare `-X`.
+- Root processes that restore permissions, replace binaries, remove WatchDog, or flush PF.
 - Jamf Protect.
 - Non-Jamf tools whose names contain “jamf” (`jamfcheck`, Jamf Compliance Editor, AppAutoPatch scripts).
 - Login-window SecurityAgentPlugins and `authorizationdb`.

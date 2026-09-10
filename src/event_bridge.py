@@ -24,6 +24,7 @@ def _load(name):
 processes = _load('processes')
 targets = _load('targets')
 shields = _load('shields')
+network = _load('network')
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = Path('/Library/Application Support/WatchDog Status')
@@ -79,6 +80,26 @@ def parse_event(line, identity, observed, historical=False):
             return None
         event.update(kind='shield', title=f'{parts[0].replace("_", " ").title()} shield {parts[1]}',
                      detail='Local control updated from Shields.')
+    elif line in {'Network Off.', 'Network On.', 'Network Yeet.'}:
+        event.update(kind='shield', title=line[:-1], detail='Outbound filter updated from Shields.')
+    elif line == 'Network rules loaded.':
+        event.update(kind='shield', title='Network rules loaded', detail='A loaded rule is not a confirmed deny.')
+    elif line == 'Network resolution failed.':
+        event.update(kind='warning', title='Network resolution failed', detail='Some hostnames could not be resolved into addresses.')
+    elif line == 'Network hostname partial.':
+        return None
+    elif line.startswith('PROTECTION ERROR:') and (
+            'Could not release the packet filter enable token' in line or
+            'Packet filter enable did not return a token' in line or
+            'option requires an argument -- X' in line):
+        event.update(kind='error', title='Packet filter token missing',
+                     detail='Network Off must pass the token from pfctl -E to pfctl -X.')
+    elif line.startswith('PROTECTION ERROR: Could not enable the packet filter'):
+        event.update(kind='error', title='Packet filter enable failed',
+                     detail='WatchDog could not increment the PF enable count.')
+    elif line.startswith('PROTECTION ERROR: Could not flush the WatchDog packet-filter anchor'):
+        event.update(kind='error', title='Packet filter flush failed',
+                     detail='WatchDog could not clear its outbound PF anchor.')
     elif 'PROTECTION ERROR:' in line or line.startswith(('Cannot kill PID ', 'Cannot pause PID ', 'Process enumeration failed')):
         event.update(kind='error', title='A protection action failed', detail='Review the administrator log for details.')
     else:
@@ -124,11 +145,12 @@ class Feed:
                 if event and event['id'] in by_id:
                     original = by_id[event['id']]
                     original.update({key: event[key] for key in ('kind', 'title', 'detail', 'code') if key in event})
-        self.parser_version = 3
+        self.events = [event for event in self.events if event.get('title') != 'Network hostname partial']
+        self.parser_version = 5
 
     def read(self, path, now):
         try:
-            if self.parser_version < 3:
+            if self.parser_version < 5:
                 self.reclassify(path)
             with open(path, 'rb') as stream:
                 info = os.fstat(stream.fileno())
@@ -224,7 +246,7 @@ def health(config):
     runtime = shields.load(Path(config['guard_root']) / 'shields.json')
     return {'guard_running': running, 'monitor_running': monitor, 'execution_blocked': permissions,
             'executable_count': len(state.get('modes', {})), 'job_count': len(state.get('jobs', {})),
-            'shields': runtime}
+            'shields': runtime, 'network': network.read_status(config['guard_root'])}
 
 
 def heal_guard(config, now, last_attempt, minimum=60):

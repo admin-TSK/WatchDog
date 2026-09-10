@@ -8,6 +8,7 @@ source "$(dirname -- "$0")/common.sh"
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_processes.py"
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_targets.py"
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_shields.py"
+"$PYTHON_BIN" -I "$REPO_ROOT/tests/test_network.py"
 for script in "$REPO_ROOT"/install.sh "$REPO_ROOT"/uninstall.sh "$REPO_ROOT"/scripts/*.sh; do /bin/bash -n "$script"; done
 
 "$PYTHON_BIN" -I "$REPO_ROOT/tests/test_events.py"
@@ -16,6 +17,7 @@ test -f "$REPO_ROOT/build/WatchDog.app/Contents/Resources/Logo.png"
 test -f "$REPO_ROOT/build/WatchDog.app/Contents/Resources/MenuBarIcon.png"
 test -f "$REPO_ROOT/build/WatchDog.app/Contents/Resources/AppIcon.png"
 test -f "$REPO_ROOT/build/WatchDog.app/Contents/Resources/WatchDog.icns"
+test -f "$REPO_ROOT/build/WatchDog.app/Contents/Resources/Assets.car"
 
 xcrun swiftc "$REPO_ROOT/src/menubar/PanelGeometry.swift" "$REPO_ROOT/tests/test_layout.swift" -o "$REPO_ROOT/build/test-layout"
 "$REPO_ROOT/build/test-layout"

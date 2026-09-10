@@ -13,6 +13,16 @@ import Foundation
         precondition(events[0].detail == "Original detail")
         precondition(!events[1].isResolved) // Older feeds omit the optional field.
         precondition(events[3].symbol == "switch.2")
+        precondition(!events[3].notifiesUser)
+        precondition(events[1].notifiesUser)
+        precondition(!events[0].notifiesUser)
+        let partialData = #"{"id":"p","timestamp":70,"kind":"warning","title":"Network hostname partial","detail":"A wildcard could not be expanded; IP approximation is incomplete."}"#.data(using: .utf8)!
+        let partial = try JSONDecoder().decode(Activity.self, from: partialData)
+        precondition(!partial.notifiesUser)
+        let loadedData = #"{"id":"r","timestamp":71,"kind":"shield","title":"Network rules loaded","detail":"A loaded rule is not a confirmed deny."}"#.data(using: .utf8)!
+        let loaded = try JSONDecoder().decode(Activity.self, from: loadedData)
+        precondition(!loaded.notifiesUser)
+        precondition([partial, loaded].filter(\.notifiesUser).isEmpty)
         print("PASS: resolved history stays available; new warnings remain visible and unread.")
     }
 }

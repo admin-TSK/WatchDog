@@ -24,6 +24,15 @@ struct Activity: Decodable, Identifiable {
     func countsAsUnread(since timestamp: Double) -> Bool {
         !isResolved && (self.timestamp ?? 0) > timestamp
     }
+    /// Banners are for protection actions and real faults, not shield toggles or expected gaps.
+    var notifiesUser: Bool {
+        if isResolved { return false }
+        if title == "Network hostname partial" { return false }
+        switch kind {
+        case "process", "permission", "job", "error", "warning": return true
+        default: return false
+        }
+    }
     static func visible(_ events: [Activity], showResolved: Bool) -> [Activity] {
         events.filter { showResolved || !$0.isResolved }
     }

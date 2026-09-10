@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-09-10
+
+- Added a **Network** shield with Off / On / Yeet. Off is the default. On denies outbound Jamf/MDM/JCDS destinations. Yeet also denies published APNs ranges and Apple enrollment hosts (iMessage/push will break).
+- Network Off stores and passes the `pfctl -E` enable token to `pfctl -X`. A missing token is reported as **Packet filter token missing**; WatchDog never calls bare `pfctl -X`.
+- Enforcement is a dedicated PF anchor (`local.watchdog`), reversible on Off or uninstall. Hostname matching is IP approximation; wildcards without CIDRs (Jamf Remote Assist) are recorded as partial and are not a load failure. VPN/proxy can bypass.
+- Enrollment and profiles stay. A loaded rule is not a confirmed deny.
+
 ## 0.3.1 — 2026-09-10
 
 - Added a **Shields** tab: one tile per local control, each independently toggleable from the menu bar.

@@ -12,6 +12,8 @@ state.tmp
 installation.json
 shields.json
 shields.tmp
+network-status.json
+pf.anchor
 *.log
 .env
 .env.*

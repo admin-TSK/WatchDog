@@ -13,7 +13,7 @@ import AppKit
                                   width: content.width + 4, height: content.height + 24)
             let fixed = NSRect(origin: PanelGeometry.origin(for: badFrame, in: visible), size: badFrame.size)
             precondition(visible.contains(fixed), "Panel extends beyond display: \(fixed)")
-            precondition(content.height <= 700, "Panel must stay bounded")
+            precondition(content.height <= 820, "Panel must stay bounded")
         }
         print("PASS: offscreen panel placement corrected on four screen sizes/origins.")
     }

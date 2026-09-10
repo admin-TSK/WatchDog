@@ -1,4 +1,5 @@
 import AppKit
+import Intents
 import SwiftUI
 import UserNotifications
 
@@ -14,6 +15,7 @@ struct Snapshot: Decodable {
     let action_total: Int
     let events: [Activity]
     let shields: ShieldState?
+    let network: NetworkStatus?
 }
 
 @MainActor final class ActivityStore: ObservableObject {
@@ -27,6 +29,7 @@ struct Snapshot: Decodable {
     @Published var launchAtLogin = false
     @Published var tab = "shields"
     @Published var pending: [String: Bool] = [:]
+    @Published var pendingNetwork: String?
     var onChange: (() -> Void)?
     private var timer: Timer?
     private var previousIDs: Set<String>?
@@ -42,6 +45,7 @@ struct Snapshot: Decodable {
         if let enabled = pending["sticky"] { value.sticky = enabled }
         if let enabled = pending["signatures"] { value.signatures = enabled }
         if let enabled = pending["connect"] { value.connect = enabled }
+        if let mode = pendingNetwork { value.network = mode }
         return value
     }
     var active: Bool {
@@ -86,7 +90,9 @@ struct Snapshot: Decodable {
             let value = try JSONDecoder().decode(Snapshot.self, from: data)
             guard value.schema == 1 else { throw CocoaError(.coderReadCorrupt) }
             if let previousIDs, notifications, !demo {
-                let new = value.events.filter { !previousIDs.contains($0.id) && $0.countsAsUnread(since: Date().timeIntervalSince1970 - 15) }
+                let new = value.events.filter {
+                    !previousIDs.contains($0.id) && $0.countsAsUnread(since: Date().timeIntervalSince1970 - 15) && $0.notifiesUser
+                }
                 if let latest = new.first { notify(latest, count: new.count) }
             }
             previousIDs = Set(value.events.map(\.id))
@@ -94,6 +100,7 @@ struct Snapshot: Decodable {
             readFailure = false
             if let live = value.shields {
                 pending = pending.filter { live.enabled($0.key) != $0.value }
+                if let pendingNetwork, live.network == pendingNetwork { self.pendingNetwork = nil }
             }
         } catch { readFailure = true }
         onChange?()
@@ -117,21 +124,62 @@ struct Snapshot: Decodable {
         let content = UNMutableNotificationContent()
         content.title = count > 1 ? "WatchDog recorded \(count) actions" : "WatchDog · \(event.title)"
         content.body = event.detail
-        if let attachment = Self.logoAttachment() {
-            content.attachments = [attachment]
-        }
-        let request = UNNotificationRequest(identifier: event.id, content: content, trigger: nil)
+        content.threadIdentifier = "watchdog-actions"
+        let payload = Self.decoratedNotification(content)
+        let request = UNNotificationRequest(identifier: event.id, content: payload, trigger: nil)
         UNUserNotificationCenter.current().add(request) { _ in }
     }
-    fileprivate static func logoAttachment() -> UNNotificationAttachment? {
-        let names = ["AppIcon@2x", "AppIcon", "Logo@3x", "Logo"]
-        guard let source = names.compactMap({ Bundle.main.url(forResource: $0, withExtension: "png") }).first else { return nil }
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("WatchDogNotify", isDirectory: true)
+    /// Leading Notification Center icon. LSUIElement + ad-hoc signing leaves the
+    /// app-icon slot empty unless the payload carries an Intents avatar.
+    fileprivate static func decoratedNotification(_ content: UNMutableNotificationContent) -> UNNotificationContent {
+        if let updated = messageNotification(content) { return updated }
+        if let attachment = logoAttachment() { content.attachments = [attachment] }
+        return content
+    }
+    fileprivate static func messageNotification(_ content: UNMutableNotificationContent) -> UNNotificationContent? {
+        guard let data = cachedAppIconPNG else { return nil }
+        let handle = INPersonHandle(value: "local.watchdog.menubar", type: .unknown)
+        let avatar = INImage(imageData: data)
+        let sender = INPerson(personHandle: handle, nameComponents: nil, displayName: "WatchDog",
+                              image: avatar, contactIdentifier: nil, customIdentifier: "local.watchdog.menubar")
+        let summary = [content.title, content.body].filter { !$0.isEmpty }.joined(separator: " · ")
+        let intent = INSendMessageIntent(recipients: nil, outgoingMessageType: .outgoingMessageText,
+                                         content: summary, speakableGroupName: nil,
+                                         conversationIdentifier: "watchdog-actions", serviceName: "WatchDog",
+                                         sender: sender, attachments: nil)
+        let interaction = INInteraction(intent: intent, response: nil)
+        interaction.direction = .incoming
+        interaction.donate { _ in }
         do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let copy = folder.appendingPathComponent("logo-\(UUID().uuidString).png")
-            try FileManager.default.copyItem(at: source, to: copy)
-            return try UNNotificationAttachment(identifier: "logo", url: copy, options: [UNNotificationAttachmentOptionsTypeHintKey: "public.png"])
+            if #available(macOS 15.0, *) {
+                let context = UNNotificationAttributedMessageContext(
+                    sendMessageIntent: intent,
+                    attributedContent: NSAttributedString(string: summary)
+                )
+                return try content.updating(from: context)
+            }
+            return try content.updating(from: intent)
+        } catch {
+            return nil
+        }
+    }
+    private static let cachedAppIconPNG: Data? = {
+        for name in ["AppIcon@2x", "AppIcon"] {
+            if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+               let data = try? Data(contentsOf: url), !data.isEmpty { return data }
+        }
+        return nil
+    }()
+    fileprivate static func logoAttachment() -> UNNotificationAttachment? {
+        guard let source = ["AppIcon@2x", "AppIcon"].compactMap({ Bundle.main.url(forResource: $0, withExtension: "png") }).first else {
+            return nil
+        }
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("WatchDog-notify-\(UUID().uuidString).png")
+        do {
+            try FileManager.default.copyItem(at: source, to: temp)
+            return try UNNotificationAttachment(identifier: "logo", url: temp, options: [
+                UNNotificationAttachmentOptionsTypeHintKey: "public.png"
+            ])
         } catch {
             return nil
         }
@@ -163,11 +211,37 @@ struct Snapshot: Decodable {
         }
         onChange?()
     }
+    func setNetwork(_ mode: String) {
+        guard ["off", "on", "yeet"].contains(mode) else { return }
+        if mode == "yeet" && shields.network != "yeet" && !confirmYeet() { return }
+        pendingNetwork = mode
+        if demo { onChange?(); return }
+        let directory = feedURL.deletingLastPathComponent().appendingPathComponent("requests")
+        do {
+            let payload: [String: Any] = ["id": "network", "mode": mode, "at": Date().timeIntervalSince1970]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            let url = directory.appendingPathComponent(UUID().uuidString + ".json")
+            try data.write(to: url, options: .atomic)
+        } catch {
+            pendingNetwork = nil
+            notificationNote = "Couldn’t update Network. Reinstall WatchDog if Shields is missing."
+        }
+        onChange?()
+    }
     private func confirmConnect() -> Bool {
         let alert = NSAlert()
         alert.messageText = "Enable Jamf Connect blocking?"
         alert.informativeText = "If this Mac uses Jamf Connect at the login window, users can be locked out until WatchDog is uninstalled. WatchDog never rewrites authorizationdb."
         alert.addButton(withTitle: "Enable")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    private func confirmYeet() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Enable Network Yeet?"
+        alert.informativeText = "Yeet also blocks Apple Push and enrollment hosts. iMessage and other push services will break. Enrollment stays. VPN or a proxy can bypass this filter."
+        alert.addButton(withTitle: "Yeet")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn
@@ -185,6 +259,7 @@ struct Snapshot: Decodable {
 }
 
 private let accent = Color(red: 0.68, green: 0.92, blue: 0.38)
+private let yeetAccent = Color(red: 1.0, green: 0.45, blue: 0.18)
 
 struct WatchDogLogo: View {
     var size: CGFloat
@@ -215,7 +290,7 @@ func menuBarLogo() -> NSImage? {
 
 struct ActivityPanel: View {
     @ObservedObject var store: ActivityStore
-    var panelSize = CGSize(width: 410, height: 700)
+    var panelSize = CGSize(width: 410, height: 820)
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
@@ -249,6 +324,7 @@ struct ActivityPanel: View {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 8) {
                         ForEach(shieldCatalog) { spec in shieldTile(spec) }
+                        networkTile
                     }.padding(.horizontal, 18).padding(.vertical, 12)
                 }.frame(minHeight: 40, maxHeight: .infinity)
             } else {
@@ -331,6 +407,62 @@ struct ActivityPanel: View {
         .background(Color.white.opacity(on ? 0.07 : 0.04), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? accent.opacity(0.5) : Color.white.opacity(0.06), lineWidth: 1))
     }
+    var networkTile: some View {
+        let mode = store.shields.network
+        let tint = networkAccent(mode)
+        let on = mode != "off"
+        let status = store.snapshot?.network
+        let note: String = {
+            if status.map({ !$0.stale.isEmpty }) == true {
+                return "Some destinations could not be resolved."
+            }
+            if mode == "yeet" { return "APNs and enrollment hosts denied. Push will break." }
+            if mode == "on" { return "Jamf and MDM destinations denied. iMessage stays up." }
+            return "Outbound filter off. Enrollment stays."
+        }()
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "globe").font(.system(size: 13, weight: .semibold)).foregroundStyle(on ? tint : .secondary)
+                    .frame(width: 26, height: 26)
+                    .background(on ? tint.opacity(0.18) : Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                Text("Network").font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 8)
+            }
+            HStack(spacing: 3) {
+                networkModeButton("Off", id: "off", selected: mode == "off", color: Color.secondary)
+                networkModeButton("On", id: "on", selected: mode == "on", color: accent)
+                networkModeButton("Yeet", id: "yeet", selected: mode == "yeet", color: yeetAccent)
+            }
+            .padding(3)
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Network")
+            Text(note).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(Color.white.opacity(on ? 0.07 : 0.04), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? tint.opacity(0.55) : Color.white.opacity(0.06), lineWidth: 1))
+        .gridCellColumns(2)
+    }
+    func networkModeButton(_ title: String, id: String, selected: Bool, color: Color) -> some View {
+        Button(title) { store.setNetwork(id) }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? (id == "off" ? Color.white : Color(red: 0.07, green: 0.09, blue: 0.12)) : .secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 5)
+            .background(selected ? color : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    func networkAccent(_ mode: String) -> Color {
+        switch mode {
+        case "yeet": return yeetAccent
+        case "on": return accent
+        default: return Color.secondary
+        }
+    }
     func metric(_ label: String, value: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(value)").font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit()
@@ -345,7 +477,7 @@ struct ActivityPanel: View {
     private let store = ActivityStore()
     private var previewWindow: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let icon = NSImage(named: "WatchDog") ?? NSImage(named: "AppIcon") ?? NSImage(named: "Logo") {
+        if let icon = NSImage(named: "WatchDog") ?? NSImage(contentsOfFile: Bundle.main.path(forResource: "WatchDog", ofType: "icns") ?? "") ?? NSImage(named: "AppIcon") ?? NSImage(named: "Logo") {
             NSApp.applicationIconImage = icon
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -358,8 +490,17 @@ struct ActivityPanel: View {
         configurePanel(for: NSScreen.main)
         store.onChange = { [weak self] in self?.updateButton() }
         updateButton()
-        if ProcessInfo.processInfo.arguments.contains("--show-panel") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.toggle() }
+        if ProcessInfo.processInfo.arguments.contains("--notify-preview") {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                guard granted else { return }
+                Task { @MainActor in
+                    let content = UNMutableNotificationContent()
+                    content.title = "WatchDog"
+                    content.body = "Notification icon check."
+                    let payload = ActivityStore.decoratedNotification(content)
+                    UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "watchdog-icon-preview", content: payload, trigger: nil)) { _ in }
+                }
+            }
         }
         if ProcessInfo.processInfo.arguments.contains("--preview") {
             let size = PanelGeometry.contentSize(in: NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768))
