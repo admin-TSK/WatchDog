@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """WatchDog: reversible Jamf Pro framework controls; does not alter MDM enrollment."""
-import json, os, plistlib, re, signal, stat, subprocess, sys, time
+import json, os, plistlib, re, signal, stat, subprocess, sys, threading, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / 'state.json'
 APP = Path('/Library/Application Support/JAMF/Jamf.app')
-STOP = False
+PERMISSION_INTERVAL = 0.2
+BACKGROUND_INTERVAL = 2.0
+STATE_LOCK = threading.RLock()
+BASE_EXECUTABLES = {Path('/usr/local/jamf/bin/jamf'), Path('/usr/local/jamf/bin/jamfAgent')}
 
 def log(message):
     print(time.strftime('%Y-%m-%d %H:%M:%S'), message, flush=True)
@@ -17,20 +20,24 @@ def load_state():
     return {'version': 1, 'modes': {}, 'jobs': {}}
 
 def save_state(state):
-    tmp = STATE.with_suffix('.tmp')
-    with open(tmp, 'w') as f:
-        os.chmod(tmp, 0o600)
-        json.dump(state, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, STATE)
+    # Both loops journal before changing controls. Never hold this lock across
+    # a subprocess or filesystem discovery scan.
+    with STATE_LOCK:
+        tmp = STATE.with_suffix('.tmp')
+        with open(tmp, 'w') as f:
+            os.chmod(tmp, 0o600)
+            json.dump(state, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, STATE)
+
 
 def command(*args):
     return subprocess.run(args, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=10)
 
 def executables():
-    paths = {Path('/usr/local/jamf/bin/jamf'), Path('/usr/local/jamf/bin/jamfAgent')}
+    paths = set(BASE_EXECUTABLES)
     if APP.exists():
         for folder, dirs, files in os.walk(APP, followlinks=False):
             dirs[:] = [d for d in dirs if not (Path(folder) / d).is_symlink()]
@@ -62,9 +69,10 @@ def block_modes(state, paths):
             mode = stat.S_IMODE(info.st_mode)
             if mode & 0o111:
                 key = str(path)
-                if key not in state['modes']:
-                    state['modes'][key] = mode
-                    save_state(state)  # Durable undo record before mutation.
+                with STATE_LOCK:
+                    if key not in state['modes']:
+                        state['modes'][key] = mode
+                        save_state(state)  # Durable undo record before mutation.
                 os.fchmod(fd, mode & ~0o111)
                 if stat.S_IMODE(os.fstat(fd).st_mode) & 0o111:
                     raise RuntimeError('Execution permission was not removed')
@@ -122,11 +130,12 @@ def block_jobs(state):
             continue
         key = f'{domain}/{label}'
         is_loaded = command('/bin/launchctl', 'print', key).returncode == 0
-        if key not in state['jobs']:
-            original = overrides[domain].get(label)
-            state['jobs'][key] = {'disabled': original in ('true', 'disabled') if original is not None else default_disabled,
-                                  'loaded': is_loaded, 'path': path}
-            save_state(state)
+        with STATE_LOCK:
+            if key not in state['jobs']:
+                original = overrides[domain].get(label)
+                state['jobs'][key] = {'disabled': original in ('true', 'disabled') if original is not None else default_disabled,
+                                      'loaded': is_loaded, 'path': path}
+                save_state(state)
         if overrides[domain].get(label) not in ('true', 'disabled'):
             action = command('/bin/launchctl', 'disable', key)
             if action.returncode:
@@ -177,9 +186,50 @@ def restore(state):
         log(f'Original launch-job state restored: {key}')
     return failures
 
-def stop(signum, frame):
-    global STOP
-    STOP = True
+class BackgroundChecks(threading.Thread):
+    """Slow discovery and launchctl work cannot hold up permission polling."""
+    def __init__(self, state, stop_event, initial_paths=None):
+        super().__init__(name='watchdog-background-checks', daemon=True)
+        self.state = state
+        self.stop_event = stop_event
+        self.path_lock = threading.Lock()
+        self.cached_paths = sorted(initial_paths if initial_paths is not None else
+                                   BASE_EXECUTABLES | {Path(p) for p in state['modes']})
+
+    def paths(self):
+        with self.path_lock:
+            return list(self.cached_paths)
+
+    def run(self):
+        while not self.stop_event.is_set():
+            started = time.monotonic()
+            try:
+                discovered = executables()
+                with STATE_LOCK:
+                    tracked = {Path(p) for p in self.state['modes']}
+                with self.path_lock:
+                    self.cached_paths = sorted(set(discovered) | tracked)
+                for failure in block_jobs(self.state):
+                    log('PROTECTION ERROR: ' + failure)
+            except subprocess.TimeoutExpired as error:
+                log('PROTECTION ERROR: Background status check timed out; permission checks continue independently. ' + repr(error))
+            except Exception as error:
+                log('PROTECTION ERROR: Background check: ' + repr(error))
+            self.stop_event.wait(max(0, BACKGROUND_INTERVAL - (time.monotonic() - started)))
+
+
+def run_permission_checks(state, background, stop_event, supervise=lambda: None):
+    while not stop_event.is_set():
+        started = time.monotonic()
+        supervise()
+        try:
+            for failure in block_modes(state, background.paths()):
+                log('PROTECTION ERROR: ' + failure)
+        except Exception as error:
+            log('PROTECTION ERROR: Permission check: ' + repr(error))
+        # Account for work time instead of adding a fixed sleep after each pass.
+        stop_event.wait(max(0, PERMISSION_INTERVAL - (time.monotonic() - started)))
+
 
 def main():
     if os.geteuid() != 0:
@@ -190,26 +240,35 @@ def main():
         failures = restore(state)
         for failure in failures: log('RESTORE ERROR: ' + failure)
         return bool(failures)
+    stop_event = threading.Event()
+    def stop(signum, frame):
+        stop_event.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     watcher = None
+    background = None
+    def supervise():
+        nonlocal watcher
+        if watcher is None or watcher.poll() is not None:
+            executable = ROOT / 'watchdog'
+            if not executable.exists():
+                executable = ROOT / 'jamf-test-blocker'  # Legacy installation.
+            watcher = subprocess.Popen([str(executable)])
+            log('WatchDog process monitor started.')
     try:
-        while not STOP:
-            if watcher is None or watcher.poll() is not None:
-                watcher = subprocess.Popen([str(ROOT / 'watchdog')])
-                log('WatchDog process monitor started.')
-            try:
-                failures = block_modes(state, executables()) + block_jobs(state)
-                for failure in failures: log('PROTECTION ERROR: ' + failure)
-                if '--once' in sys.argv:
-                    return bool(failures)
-            except Exception as e:
-                log('PROTECTION ERROR: ' + repr(e))
-                if '--once' in sys.argv: return 1
-            for _ in range(20):
-                if STOP: break
-                time.sleep(0.1)
+        supervise()
+        if '--once' in sys.argv:
+            failures = block_modes(state, executables()) + block_jobs(state)
+            for failure in failures: log('PROTECTION ERROR: ' + failure)
+            return bool(failures)
+        background = BackgroundChecks(state, stop_event)
+        background.start()
+        log('Permission checks: 200 ms; background discovery/job checks: 2 seconds; process monitor: 100 ms.')
+        run_permission_checks(state, background, stop_event, supervise)
     finally:
+        stop_event.set()
+        if background:
+            background.join(timeout=0.5)
         if watcher and watcher.poll() is None:
             watcher.terminate()
             try: watcher.wait(timeout=3)

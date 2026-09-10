@@ -40,7 +40,7 @@ The monitor matches known executable paths and executable paths inside Jamf.app.
 - Actions completed before the next polling cycle.
 - Jamf Protect, Jamf Connect, and system-wide installer or APNs services.
 
-The monitor’s 100 ms interval and the guard’s approximately two-second interval are best-effort polling. Continuous monitoring has a CPU cost. This is a test control, not a kernel execution-denial mechanism or a write sandbox.
+The native monitor checks processes every 100 ms. The guard checks permissions at known executable paths every 200 ms, including files replaced at those paths. A separate background thread discovers new component paths and checks launch jobs approximately every two seconds. Slow session discovery or launchctl commands cannot hold up the permission loop. Both threads serialize changes to the undo record. All intervals are best-effort polling. Continuous monitoring has a CPU cost. This is a test control, not a kernel execution-denial mechanism or a write sandbox.
 
 Jamf documents the distinction between its local binary and MDM in [Jamf Pro framework fundamentals](https://www.jamf.com/blog/fundamentals-jamf-pro-framework-jnuc2022/), and lists its local components in [Components Installed on Managed Computers](https://learn.jamf.com/r/en-US/jamf-pro-documentation-11.28.0/Components_Installed_on_Managed_Computers).
 

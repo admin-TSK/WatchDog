@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Reduced permission checks to 200 ms and separated slow component discovery and launch-job checks from the permission loop.
+- Added regression coverage for restored permissions and binary replacement while background checks stall.
+
 ## 0.2.0 — 2026-09-10
 
 - Bounded the menu panel to the visible display and made the activity list adapt to available height.

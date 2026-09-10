@@ -37,7 +37,8 @@ The panel shows confirmed WatchDog actions. It does not observe every execution 
 | Layer | Action | Frequency |
 | --- | --- | --- |
 | Launch jobs | Disable and unload matching Jamf Pro jobs | Approximately every 2 seconds |
-| Executable permissions | Remove execution permission from the main binary and declared executables inside Jamf.app | Approximately every 2 seconds |
+| Executable permissions | Remove execution permission at known framework paths, including replacements | Approximately every 200 ms |
+| Component discovery | Find new declared executable paths inside Jamf.app | Approximately every 2 seconds |
 | Process monitor | Pause and kill matching processes and observable descendants | Approximately every 100 ms |
 | Recovery | Record original file modes and effective job states before modification | Before each first change |
 | Supervision | Restart the monitor if it exits; start the guard at boot | Managed by the guard and launchd |
