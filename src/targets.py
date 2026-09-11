@@ -23,6 +23,7 @@ PREFIXES = (
     '/Library/Application Support/JamfAppInstallers/',
     '/Applications/Self Service.app/',
     '/Applications/Jamf Self Service.app/',
+    '/Applications/Self Service+.app/',
 )
 # WATCHDOG_TARGETS_PREFIX_END
 
@@ -91,6 +92,7 @@ WALK_ROOTS = (
     '/Library/Application Support/JamfAppInstallers',
     '/Applications/Self Service.app',
     '/Applications/Jamf Self Service.app',
+    '/Applications/Self Service+.app',
 )
 
 CONNECT_WALK_ROOTS = (
@@ -123,6 +125,8 @@ def job_label(label, block_connect=False):
     if label.startswith('com.jamf.protect') or label.startswith('com.jamf.complianceeditor'):
         return False
     if label.startswith('com.jamfsoftware.task.'):
+        return True
+    if label.startswith('com.jamf.management.'):
         return True
     if label in CORE_JOB_LABELS:
         return True

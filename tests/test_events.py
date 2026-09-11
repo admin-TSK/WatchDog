@@ -140,7 +140,7 @@ class EventTests(unittest.TestCase):
             upgraded = events.Feed(saved)
             upgraded.read(path, 2)
             self.assertEqual([event['title'] for event in upgraded.events], ['Network rules loaded'])
-            self.assertEqual(upgraded.parser_version, 5)
+            self.assertEqual(upgraded.parser_version, 6)
             self.assertEqual(upgraded.action_total, 1)
 
     def test_packet_filter_token_error_is_named_and_reclassified(self):
@@ -167,8 +167,38 @@ class EventTests(unittest.TestCase):
             upgraded.read(path, 2)
             self.assertEqual(upgraded.events[0]['id'], original_id)
             self.assertEqual(upgraded.events[0]['title'], 'Packet filter token missing')
-            self.assertEqual(upgraded.parser_version, 5)
+            self.assertEqual(upgraded.parser_version, 6)
             self.assertEqual(upgraded.action_total, 1)
+
+    def test_background_timeouts_are_named_and_reclassified(self):
+        kill = ("PROTECTION ERROR: Background status check timed out; permission checks continue "
+                "independently. TimeoutExpired(['/sbin/pfctl', '-k', '0.0.0.0/0', '-k', '203.0.113.10'], 10)")
+        job = ("PROTECTION ERROR: Background status check timed out; permission checks continue "
+               "independently. TimeoutExpired(('/bin/launchctl', 'print', 'system/com.jamfsoftware.task.1'), 10)")
+        killed = events.parse_event(kill, 'k', 42)
+        self.assertEqual(killed['title'], 'Packet filter state kill timed out')
+        self.assertEqual(killed['kind'], 'warning')
+        self.assertNotIn('203.0.113.10', str(killed))
+        printed = events.parse_event(job, 'j', 42)
+        self.assertEqual(printed['title'], 'Launch job check timed out')
+        reset = events.parse_event('PROTECTION ERROR: Existing Jamf connections were not reset', 'm', 42)
+        self.assertEqual(reset['kind'], 'warning')
+        self.assertEqual(reset['title'], 'Existing Jamf connections were not reset')
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'log'
+            path.write_text('2026-09-11 22:28:35 ' + kill + '\n')
+            feed = events.Feed()
+            feed.read(path, 1)
+            saved = feed.saved()
+            saved['parser_version'] = 5
+            saved['events'][0].update(title='A protection action failed',
+                                      detail='Review the administrator log for details.')
+            original_id = saved['events'][0]['id']
+            upgraded = events.Feed(saved)
+            upgraded.read(path, 2)
+            self.assertEqual(upgraded.events[0]['id'], original_id)
+            self.assertEqual(upgraded.events[0]['title'], 'Packet filter state kill timed out')
+            self.assertEqual(upgraded.parser_version, 6)
 
     def test_heal_guard_is_rate_limited(self):
         config = {'guard_label': 'test.guard'}

@@ -4,7 +4,7 @@
 
 Reversible **local Jamf control** for enrolled macOS test machines. WatchDog can block the Jamf Pro framework, Self Service, and App Installers on the Mac. MDM enrollment stays intact. Jamf Connect blocking is optional and off by default.
 
-> **Experimental.** This is a test utility, not a security boundary. It interrupts inventory, policies, Self Service, and App Installers that depend on local binaries. It does not freeze the disk. Network On/Yeet can deny check-in and Jamf cloud fetches; Yeet also disrupts Apple push. Polling has a CPU cost. It is not kernel execution denial.
+> **Experimental.** This is a test utility, not a security boundary. It interrupts inventory, policies, Self Service, and App Installers that depend on local binaries. It does not freeze the disk. Network On denies Jamf and Apple HTTPS check-in and profile fetch; Yeet also disrupts Apple push. Installed profiles stay. Polling has a CPU cost. It is not kernel execution denial.
 
 **0.4.0** · macOS 14+ · independent of Jamf · [changelog](CHANGELOG.md) · [architecture](docs/architecture.md) · [security](SECURITY.md)
 
@@ -69,7 +69,7 @@ Shields shows one tile per control. Toggle any layer independently:
 | Sticky block | Off | `UF_IMMUTABLE` after stripping execute |
 | Signatures | Off | Match Jamf code-signing IDs in the monitor |
 | Jamf Connect | Off | Optional Connect app/agents; confirm before enabling |
-| Network | Off | Off / On / Yeet outbound filter. On denies Jamf/MDM destinations. Yeet also blocks APNs (confirm). |
+| Network | Off | Off / On / Yeet outbound filter. On denies Jamf and Apple HTTPS check-in/profile fetch. Yeet also blocks APNs (confirm). |
 
 Turning a core shield off reverses that layer. Enabling Connect can lock the login window on Macs that use it; WatchDog still never rewrites `authorizationdb`.
 
@@ -85,7 +85,7 @@ Quit the menu bar to close the interface only. Protection keeps running.
 | Permissions | Strip execute bits at known paths, including replacements | ~100 ms |
 | Discovery | Find new executables under Jamf support folders and apps | ~2 s |
 | Process monitor | Pause and kill matching processes, children, and group helpers | ~50 ms |
-| Network | Outbound PF deny to discovered Jamf/MDM hosts (On) plus APNs/enrollment (Yeet) | On change, then ~60 s DNS refresh |
+| Network | Outbound PF deny to discovered Jamf/MDM and Apple enrollment HTTPS (On) plus APNs (Yeet) | On change, then ~60 s DNS refresh |
 | Recovery | Record original modes, flags, and job states | Before each first change |
 | Supervision | Restart the monitor; start the guard at boot | launchd + guard |
 

@@ -98,6 +98,7 @@ static int path_matches(const char *path) {
         "/Library/Application Support/JamfAppInstallers/",
         "/Applications/Self Service.app/",
         "/Applications/Jamf Self Service.app/",
+        "/Applications/Self Service+.app/",
         NULL
     };
     /* WATCHDOG_TARGETS_PREFIX_END */

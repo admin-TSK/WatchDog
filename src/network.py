@@ -9,6 +9,7 @@ import os
 import plistlib
 import re
 import socket
+import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,13 +27,18 @@ MARKER_RE = re.compile(
 ENABLE_TOKEN_RE = re.compile(r'(?im)^\s*Token\s*:\s*(\d+)\s*$')
 YEET_WARNING = (
     'WARNING: Network Yeet blocks Apple Push (TCP 5223 and 443 to published APNs '
-    'ranges) and Apple enrollment hosts. iMessage and other push services will break. '
-    'Enrollment stays. VPN or a proxy can bypass this filter. Uninstall or set Network '
-    'Off to remove only WatchDog’s PF anchor.'
+    'ranges). iMessage and other push services will break. Enrollment stays. VPN or '
+    'a proxy can bypass this filter. Uninstall or set Network Off to remove only '
+    'WatchDog’s PF anchor.'
 )
 ACTIONS = {'deny'}
 TRANSPORTS = {'tcp'}
 DIRECTIONS = {'out'}
+PROFILES = '/usr/bin/profiles'
+STATE_KILL_CAP = 8
+STATE_KILL_TIMEOUT = 2
+STATE_KILL_STOP_AFTER = 2
+MGMT_KILL_WARNING = 'Existing Jamf connections were not reset'
 
 
 def normalize_host(value):
@@ -42,13 +48,28 @@ def normalize_host(value):
 
 
 def host_from_url(value):
+    endpoint = endpoint_from_url(value)
+    return endpoint[0] if endpoint else None
+
+
+def endpoint_from_url(value):
+    """Return (host, port). Host only; no path or query. Port defaults to 443."""
     if not value or not isinstance(value, str):
         return None
     text = value.strip().strip('"')
     if '://' not in text:
         text = 'https://' + text
-    host = normalize_host(urlparse(text).hostname or '')
-    return host or None
+    parsed = urlparse(text)
+    host = normalize_host(parsed.hostname or '')
+    if not host:
+        return None
+    try:
+        port = int(parsed.port) if parsed.port is not None else 443
+    except (TypeError, ValueError):
+        port = 443
+    if port < 1 or port > 65535:
+        port = 443
+    return host, port
 
 
 def wildcard_matches(pattern, name):
@@ -125,8 +146,8 @@ def groups_for_mode(policy, mode):
     return [group for group in policy['groups'] if mode in group['modes']]
 
 
-def discover_management_hosts(jamf_plist=None, enrollment_text=None):
-    """Return hostnames only. Never keep URL paths or query strings."""
+def discover_management_endpoints(jamf_plist=None, enrollment_text=None):
+    """Return (host, port) pairs. Never keep URL paths or query strings."""
     found = []
     path = Path(jamf_plist) if jamf_plist is not None else JAMF_PLIST
     try:
@@ -134,22 +155,45 @@ def discover_management_hosts(jamf_plist=None, enrollment_text=None):
             data = plistlib.load(stream)
         if isinstance(data, dict):
             for key in ('jss_url', 'url', 'jss_url_raw'):
-                host = host_from_url(data.get(key))
-                if host:
-                    found.append(host)
+                endpoint = endpoint_from_url(data.get(key))
+                if endpoint:
+                    found.append(endpoint)
     except (OSError, ValueError, plistlib.InvalidFileException):
         pass
     text = enrollment_text or ''
     for match in re.finditer(
             r'(?:MDM server|ServerURL|CheckInURL)[:\s=]+([^\s]+)', text, re.I):
-        host = host_from_url(match.group(1).strip().strip('",'))
-        if host:
-            found.append(host)
+        endpoint = endpoint_from_url(match.group(1).strip().strip('",'))
+        if endpoint:
+            found.append(endpoint)
     unique = []
-    for host in found:
-        if host not in unique:
-            unique.append(host)
+    seen = set()
+    for host, port in found:
+        key = (host, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((host, port))
     return unique
+
+
+def discover_management_hosts(jamf_plist=None, enrollment_text=None):
+    """Return hostnames only. Never keep URL paths or query strings."""
+    hosts = []
+    for host, _port in discover_management_endpoints(
+            jamf_plist=jamf_plist, enrollment_text=enrollment_text):
+        if host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def enrollment_text_from_profiles(run=None, timeout=3):
+    """Read local enrollment display text. Caller must not log the raw URL."""
+    run = run or _subprocess_run
+    result = _run(run, [PROFILES, 'show', '-type', 'enrollment'], timeout=timeout)
+    if result.returncode:
+        return ''
+    return result.stdout or ''
 
 
 def resolve_host(host, getaddrinfo=socket.getaddrinfo):
@@ -166,14 +210,31 @@ def resolve_host(host, getaddrinfo=socket.getaddrinfo):
     return v4, v6
 
 
-def collect_destinations(groups, discovered, resolve=resolve_host):
+def collect_destinations(groups, discovered, resolve=resolve_host, endpoints=None):
     """Build PF tables. Wildcards without CIDRs are partial, not expanded."""
     https_v4, https_v6 = set(), set()
     apns_v4, apns_v6 = set(), set()
+    mgmt_v4, mgmt_v6 = set(), set()
+    mgmt_ports = {443}
+    if endpoints:
+        for item in endpoints:
+            if not item or len(item) < 2:
+                continue
+            try:
+                port = int(item[1])
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535:
+                mgmt_ports.add(port)
     partial, stale = [], []
     resolved = 0
     for group in groups:
-        table_v4, table_v6 = (apns_v4, apns_v6) if group['id'] == 'apns' else (https_v4, https_v6)
+        if group.get('discover') == 'management':
+            table_v4, table_v6 = mgmt_v4, mgmt_v6
+        elif group['id'] == 'apns':
+            table_v4, table_v6 = apns_v4, apns_v6
+        else:
+            table_v4, table_v6 = https_v4, https_v6
         hosts = list(group['hosts'])
         if group.get('discover') == 'management':
             hosts.extend(discovered)
@@ -200,6 +261,9 @@ def collect_destinations(groups, discovered, resolve=resolve_host):
     return {
         'https_v4': sorted(https_v4),
         'https_v6': sorted(https_v6),
+        'mgmt_v4': sorted(mgmt_v4),
+        'mgmt_v6': sorted(mgmt_v6),
+        'mgmt_ports': tuple(sorted(mgmt_ports)) if (mgmt_v4 or mgmt_v6) else (),
         'apns_v4': sorted(apns_v4),
         'apns_v6': sorted(apns_v6),
         'partial': sorted(set(partial)),
@@ -225,11 +289,14 @@ def generate_anchor(mode, destinations):
     lines = [
         f'# WatchDog network {mode} — outbound destination denies only',
     ]
-    lines.extend(_table_block('watchdog_https_v4', destinations['https_v4'], (443,)))
-    lines.extend(_table_block('watchdog_https_v6', destinations['https_v6'], (443,)))
+    lines.extend(_table_block('watchdog_https_v4', destinations.get('https_v4') or [], (443,)))
+    lines.extend(_table_block('watchdog_https_v6', destinations.get('https_v6') or [], (443,)))
+    mgmt_ports = tuple(destinations.get('mgmt_ports') or (443,))
+    lines.extend(_table_block('watchdog_mgmt_v4', destinations.get('mgmt_v4') or [], mgmt_ports))
+    lines.extend(_table_block('watchdog_mgmt_v6', destinations.get('mgmt_v6') or [], mgmt_ports))
     if mode == 'yeet':
-        lines.extend(_table_block('watchdog_apns_v4', destinations['apns_v4'], (443, 5223)))
-        lines.extend(_table_block('watchdog_apns_v6', destinations['apns_v6'], (443, 5223)))
+        lines.extend(_table_block('watchdog_apns_v4', destinations.get('apns_v4') or [], (443, 5223)))
+        lines.extend(_table_block('watchdog_apns_v6', destinations.get('apns_v6') or [], (443, 5223)))
     text = '\n'.join(lines) + '\n'
     for line in text.splitlines():
         if line.startswith('block ') and ' to ' not in line:
@@ -298,8 +365,15 @@ def _strip_marker(text):
     return MARKER_RE.sub('\n', text)
 
 
-def _run(run, args):
-    return run(args, text=True, capture_output=True, check=False, timeout=10)
+def _run(run, args, timeout=10):
+    """Run pfctl. Timeouts become a failed result so a stuck -k cannot abort the sync."""
+    try:
+        return run(args, text=True, capture_output=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout if isinstance(error.stdout, str) else ''
+        stderr = error.stderr if isinstance(error.stderr, str) else ''
+        return subprocess.CompletedProcess(
+            list(args), 124, stdout or '', stderr or f'timed out after {timeout}s')
 
 
 def _pfctl_message(stderr, fallback):
@@ -365,6 +439,105 @@ def tokens_from_references(text):
         if token not in tokens:
             tokens.append(token)
     return tokens
+
+
+def _is_unicast(addr):
+    if not addr or not isinstance(addr, str) or '/' in addr:
+        return False
+    try:
+        ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return True
+
+
+def _unicast_list(*groups):
+    seen = []
+    for addr in groups:
+        if _is_unicast(addr) and addr not in seen:
+            seen.append(addr)
+    return seen
+
+
+def state_kill_targets(destinations):
+    """Unicast destinations only, management first, capped. Never CIDRs."""
+    destinations = destinations or {}
+    management = _unicast_list(
+        *(destinations.get('mgmt_v4') or []),
+        *(destinations.get('mgmt_v6') or []))
+    other = _unicast_list(
+        *(destinations.get('https_v4') or []),
+        *(destinations.get('https_v6') or []),
+        *(destinations.get('apns_v4') or []),
+        *(destinations.get('apns_v6') or []))
+    ordered = []
+    for addr in management + other:
+        if addr not in ordered:
+            ordered.append(addr)
+    return ordered[:STATE_KILL_CAP], set(management)
+
+
+def _pf_not_enabled(stderr):
+    text = (stderr or '').lower()
+    return any(needle in text for needle in (
+        'device not configured',
+        'pf is disabled',
+        '/dev/pf: no such file',
+        'pfctl: /dev/pf',
+    ))
+
+
+def _anchor_has_rules(run, pfctl, commands):
+    show = [pfctl, '-a', ANCHOR, '-s', 'rules']
+    commands.append(show)
+    result = _run(run, show)
+    if result.returncode:
+        return False
+    for line in (result.stdout or '').splitlines():
+        text = line.strip()
+        if text and not text.startswith('#'):
+            return True
+    return False
+
+
+def _enable_packet_filter(run, pfctl, pf, commands, failures):
+    enable = [pfctl, '-E']
+    commands.append(enable)
+    result = _run(run, enable)
+    if result.returncode:
+        failures.append(_pfctl_message(result.stderr, 'Could not enable the packet filter'))
+        return False
+    pf['enabled_incremented'] = True
+    token = parse_enable_token(result.stdout) or parse_enable_token(result.stderr)
+    if not token:
+        failures.append('Packet filter enable did not return a token')
+        return False
+    pf['enable_token'] = token
+    return True
+
+
+def _kill_unicast_states(run, pfctl, destinations, commands):
+    """Best-effort state kill. Timeouts do not fail rule load."""
+    warnings = []
+    targets, management = state_kill_targets(destinations)
+    consecutive = 0
+    management_timed_out = False
+    for addr in targets:
+        source = '::/0' if ':' in addr else '0.0.0.0/0'
+        kill = [pfctl, '-k', source, '-k', addr]
+        commands.append(kill)
+        killed = _run(run, kill, timeout=STATE_KILL_TIMEOUT)
+        if killed.returncode == 124:
+            consecutive += 1
+            if addr in management:
+                management_timed_out = True
+            if consecutive >= STATE_KILL_STOP_AFTER:
+                break
+        else:
+            consecutive = 0
+    if management_timed_out:
+        warnings.append(MGMT_KILL_WARNING)
+    return warnings
 
 
 def _pf_is_recorded(root, pf):
@@ -456,7 +629,7 @@ def flush(root, state, *, run=None, pf_conf=None, pfctl=PFCTL, force=False):
 
 
 def sync(mode, root, state, *, run=None, resolve=None, discover=None, pf_conf=None,
-         pfctl=PFCTL, policy_path=None, enrollment_text=None):
+         pfctl=PFCTL, policy_path=None, enrollment_text=None, kill_states=True):
     """Install or refresh the WatchDog PF anchor. mode is off, on, or yeet."""
     run = run or _subprocess_run
     resolve = resolve or resolve_host
@@ -468,9 +641,20 @@ def sync(mode, root, state, *, run=None, resolve=None, discover=None, pf_conf=No
 
     policy = load_policy(policy_path or root / 'network_policy.json')
     groups = groups_for_mode(policy, mode)
-    discovered = list(discover()) if discover else discover_management_hosts(
-        enrollment_text=enrollment_text)
-    destinations = collect_destinations(groups, discovered, resolve=resolve)
+    if discover:
+        discovered = list(discover())
+        endpoints = [(host, 443) for host in discovered]
+    else:
+        text = enrollment_text
+        if text is None:
+            text = enrollment_text_from_profiles(run)
+        endpoints = discover_management_endpoints(enrollment_text=text)
+        discovered = []
+        for host, _port in endpoints:
+            if host not in discovered:
+                discovered.append(host)
+    destinations = collect_destinations(
+        groups, discovered, resolve=resolve, endpoints=endpoints)
     anchor = generate_anchor(mode, destinations)
     anchor_path = root / 'pf.anchor'
     anchor_path.write_text(anchor)
@@ -483,46 +667,36 @@ def sync(mode, root, state, *, run=None, resolve=None, discover=None, pf_conf=No
 
     current = conf_path.read_text() if conf_path.exists() else ''
     updated, _inserted = _insert_marker(current, str(anchor_path))
+    reload_needed = updated != current
     if updated != current:
         conf_path.write_text(updated)
         pf['conf_marked'] = True
+    elif _pf_conf_has_marker(updated):
+        pf['conf_marked'] = True
+        reload_needed = not _anchor_has_rules(run, pfctl, commands)
+    if reload_needed:
         reload_cmd = [pfctl, '-f', str(conf_path)]
         commands.append(reload_cmd)
         result = _run(run, reload_cmd)
         if result.returncode:
             failures.append(result.stderr.strip() or 'Could not load pf.conf with WatchDog anchor')
-    elif _pf_conf_has_marker(updated):
-        pf['conf_marked'] = True
 
     if not pf.get('enable_token') and not pf.get('enabled_incremented'):
-        enable = [pfctl, '-E']
-        commands.append(enable)
-        result = _run(run, enable)
-        if result.returncode:
-            failures.append(_pfctl_message(result.stderr, 'Could not enable the packet filter'))
-        else:
-            pf['enabled_incremented'] = True
-            token = parse_enable_token(result.stdout) or parse_enable_token(result.stderr)
-            if not token:
-                failures.append('Packet filter enable did not return a token')
-            else:
-                pf['enable_token'] = token
+        _enable_packet_filter(run, pfctl, pf, commands, failures)
 
     load_anchor = [pfctl, '-a', ANCHOR, '-f', str(anchor_path)]
     commands.append(load_anchor)
     result = _run(run, load_anchor)
+    if result.returncode and _pf_not_enabled(result.stderr):
+        if _enable_packet_filter(run, pfctl, pf, commands, failures):
+            commands.append(load_anchor)
+            result = _run(run, load_anchor)
     if result.returncode:
-        failures.append(result.stderr.strip() or 'Could not load WatchDog PF anchor')
+        failures.append(_pfctl_message(result.stderr, 'Could not load WatchDog PF anchor'))
 
-    for addr in destinations['https_v4'] + destinations['https_v6'] + destinations['apns_v4'] + destinations['apns_v6']:
-        if '/' in addr:
-            family_src = '::/0' if ':' in addr.split('/')[0] else '0.0.0.0/0'
-            kill = [pfctl, '-k', family_src, '-k', addr]
-        else:
-            source = '::/0' if ':' in addr else '0.0.0.0/0'
-            kill = [pfctl, '-k', source, '-k', addr]
-        commands.append(kill)
-        _run(run, kill)
+    warnings = []
+    if kill_states:
+        warnings.extend(_kill_unicast_states(run, pfctl, destinations, commands))
 
     status = {
         'mode': mode,
@@ -533,9 +707,8 @@ def sync(mode, root, state, *, run=None, resolve=None, discover=None, pf_conf=No
         'pf_enabled': bool(pf.get('enable_token') or pf.get('enabled_incremented')),
     }
     _write_json(root / 'network-status.json', status)
-    return failures, commands
+    return failures + warnings, commands
 
 
 def _subprocess_run(args, **kwargs):
-    import subprocess
     return subprocess.run(args, **kwargs)

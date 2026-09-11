@@ -118,7 +118,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('Menu bar app:', text)
         self.assertIn('Tracked executables: 1', text)
         self.assertIn('Jamf Connect blocking: False', text)
-        self.assertIn('MDM enrollment stays intact. Network On/Yeet can deny check-in.', text)
+        self.assertIn('MDM enrollment stays intact. Network On denies Jamf and Apple HTTPS check-in; Yeet also denies APNs.', text)
 
     def test_status_reports_live_shields(self):
         root, plist, label, python = self.fixture()

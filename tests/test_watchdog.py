@@ -1,4 +1,4 @@
-import importlib.util, json, os, signal, stat, subprocess, tempfile, time
+import importlib.util, json, os, plistlib, signal, stat, subprocess, tempfile, time
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('guard', ROOT / 'src' / 'guard.py')
@@ -78,7 +78,7 @@ with tempfile.TemporaryDirectory(prefix='watchdog-test-') as tmp:
     loaded = {'system/com.jamfsoftware.task.1'}
     guard.jobs = lambda: {('system', 'com.jamfsoftware.task.1'): ('/test/task.plist', False),
                           ('system', 'com.jamf.management.daemon'): (None, False)}
-    def command(*args):
+    def command(*args, **kwargs):
         calls.append(args)
         operation, target = args[1:3]
         output, status = '', 0
@@ -100,6 +100,68 @@ with tempfile.TemporaryDirectory(prefix='watchdog-test-') as tmp:
     assert enabled['system/com.jamfsoftware.task.1'] is True
     assert enabled['system/com.jamf.management.daemon'] is False
     print('PASS: launch-job state saved before blocking and original effective states restored (mock launchctl).')
+
+    timeout_state = {'version': 2, 'modes': {}, 'jobs': {}, 'flags': {}, 'pf': {}}
+    def timed_out(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 124, '', 'timed out after 3s')
+    guard.command = timed_out
+    assert not guard.block_jobs(timeout_state)
+    print('PASS: launchctl timeout skips this pass instead of aborting protection.')
+
+    timeout_calls = []
+    retry_state = {'version': 2, 'modes': {}, 'jobs': {}, 'flags': {}, 'pf': {}}
+    def timed_out_print(*args, **kwargs):
+        timeout_calls.append(args)
+        operation = args[1]
+        if operation in ('print-disabled', 'print'):
+            return subprocess.CompletedProcess(args, 124, '', 'timed out after 3s')
+        return subprocess.CompletedProcess(args, 0, '', '')
+    guard.command = timed_out_print
+    assert not guard.block_jobs(retry_state)
+    assert any(call[1] == 'disable' for call in timeout_calls)
+    assert any(call[1] == 'bootout' for call in timeout_calls)
+    print('PASS: print-disabled timeout still disable/bootout.')
+
+    skip_calls = []
+    skip_state = {'version': 2, 'modes': {}, 'jobs': {
+        'system/com.jamfsoftware.task.1': {
+            'disabled': False, 'loaded': True, 'path': '/test/task.plist',
+            'current_loaded': False, 'current_disabled': True,
+        },
+        'system/com.jamf.management.daemon': {
+            'disabled': True, 'loaded': False, 'path': None,
+            'current_loaded': False, 'current_disabled': True,
+        },
+    }, 'flags': {}, 'pf': {}}
+    def skip_command(*args, **kwargs):
+        skip_calls.append(args)
+        if args[1] == 'print-disabled':
+            return subprocess.CompletedProcess(
+                args, 0,
+                '"com.jamfsoftware.task.1" => disabled\n"com.jamf.management.daemon" => disabled\n',
+                '')
+        raise AssertionError('print should be skipped for already unloaded jobs: ' + str(args))
+    guard.command = skip_command
+    assert not guard.block_jobs(skip_state)
+    assert skip_calls and all(call[1] == 'print-disabled' for call in skip_calls)
+    print('PASS: already-unloaded jobs skip print.')
+
+    user_root = temp / 'fake-home'
+    agents = user_root / 'Library' / 'LaunchAgents'
+    agents.mkdir(parents=True)
+    with open(agents / 'com.jamf.management.startup.plist', 'wb') as stream:
+        plistlib.dump({'Label': 'com.jamf.management.startup', 'Disabled': False}, stream)
+    class Home:
+        pw_dir = str(user_root)
+    scans = guard.user_launch_agent_scans([501], homedir=lambda uid: Home())
+    assert scans == [(agents, ['gui/501'])]
+    link_home = temp / 'link-home'
+    (link_home / 'Library').mkdir(parents=True)
+    os.symlink(agents, link_home / 'Library' / 'LaunchAgents')
+    class LinkHome:
+        pw_dir = str(link_home)
+    assert guard.user_launch_agent_scans([501], homedir=lambda uid: LinkHome()) == []
+    print('PASS: per-user LaunchAgents scanned; symlink folder skipped.')
 
     source = temp / 'fixture.c'
     source.write_text('''#include <unistd.h>

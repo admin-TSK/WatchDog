@@ -88,6 +88,15 @@ def parse_event(line, identity, observed, historical=False):
         event.update(kind='warning', title='Network resolution failed', detail='Some hostnames could not be resolved into addresses.')
     elif line == 'Network hostname partial.':
         return None
+    elif line.startswith('PROTECTION ERROR: Existing Jamf connections were not reset'):
+        event.update(kind='warning', title='Existing Jamf connections were not reset',
+                     detail='Outbound deny rules were applied; some Jamf sockets were not reset.')
+    elif line.startswith('PROTECTION ERROR: Background status check timed out') and "'-k'" in line:
+        event.update(kind='warning', title='Packet filter state kill timed out',
+                     detail='Existing connections were not reset; outbound deny rules were still applied.')
+    elif line.startswith('PROTECTION ERROR: Background status check timed out') and 'launchctl' in line:
+        event.update(kind='warning', title='Launch job check timed out',
+                     detail='WatchDog will retry disabling matching launch jobs.')
     elif line.startswith('PROTECTION ERROR:') and (
             'Could not release the packet filter enable token' in line or
             'Packet filter enable did not return a token' in line or
@@ -146,11 +155,11 @@ class Feed:
                     original = by_id[event['id']]
                     original.update({key: event[key] for key in ('kind', 'title', 'detail', 'code') if key in event})
         self.events = [event for event in self.events if event.get('title') != 'Network hostname partial']
-        self.parser_version = 5
+        self.parser_version = 6
 
     def read(self, path, now):
         try:
-            if self.parser_version < 5:
+            if self.parser_version < 6:
                 self.reclassify(path)
             with open(path, 'rb') as stream:
                 info = os.fstat(stream.fileno())

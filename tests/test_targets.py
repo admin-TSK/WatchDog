@@ -29,6 +29,8 @@ class TargetParityTests(unittest.TestCase):
 
     def test_jamf_helper_and_usr_local_bin_are_in_scope(self):
         self.assertIn('/usr/local/bin/jamf', targets.EXACT_PATHS)
+        self.assertIn('/Applications/Self Service+.app/', targets.PREFIXES)
+        self.assertIn('/Applications/Self Service+.app', targets.WALK_ROOTS)
         self.assertTrue(any(p.startswith('/Library/Application Support/JAMF/') for p in targets.PREFIXES))
         self.assertFalse(any(Path(p).name == 'Jamf.app' for p in targets.PREFIXES))
 
@@ -43,6 +45,8 @@ class TargetParityTests(unittest.TestCase):
         self.assertTrue(targets.job_label('com.jamfsoftware.task.1'))
         self.assertTrue(targets.job_label('com.jamfsoftware.selfservice.mac'))
         self.assertTrue(targets.job_label('com.jamf.appinstallers.GoogleChrome'))
+        self.assertTrue(targets.job_label('com.jamf.management.startup'))
+        self.assertTrue(targets.job_label('com.jamf.management.agent'))
         self.assertFalse(targets.job_label('com.jamf.connect'))
         self.assertTrue(targets.job_label('com.jamf.connect', block_connect=True))
         self.assertTrue(targets.job_label('com.jamf.connect.useragent', block_connect=True))

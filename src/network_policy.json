@@ -59,7 +59,7 @@
     },
     {
       "id": "apple-enrollment",
-      "modes": ["yeet"],
+      "modes": ["on", "yeet"],
       "direction": "out",
       "transport": "tcp",
       "ports": [443],

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Network On also denies Apple enrollment/profile-fetch HTTPS. Yeet still uniquely blocks APNs. Installed profiles stay.
+- Discovered JSS URLs honor a non-443 port. Live Network On/Yeet also reads MDM ServerURL hosts from `profiles show` (host only; never logged).
+- PF state-kill is unicast-only and management-first. A management kill timeout is a warning, not a failed rule load. After reboot, an empty running anchor reloads `pf.conf`; a disabled filter is re-enabled even if a token was stored.
+- Launch jobs match `com.jamf.management.*`, scan per-user `~/Library/LaunchAgents`, and still disable known labels when `print` times out. Self Service+ is in the path lists.
+
 ## 0.4.0 — 2026-09-10
 
 - Added a **Network** shield with Off / On / Yeet. Off is the default. On denies outbound Jamf/MDM/JCDS destinations. Yeet also denies published APNs ranges and Apple enrollment hosts (iMessage/push will break).

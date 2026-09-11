@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """WatchDog: reversible Jamf local-component controls; does not alter MDM enrollment."""
-import json, os, plistlib, re, signal, stat, subprocess, sys, threading, time
+import json, os, plistlib, pwd, re, signal, stat, subprocess, sys, threading, time
 from pathlib import Path
 
 import importlib.util
@@ -139,9 +139,12 @@ def save_state(state):
         os.replace(tmp, STATE)
 
 
-def command(*args):
-    return subprocess.run(args, text=True, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, timeout=10)
+def command(*args, timeout=10):
+    try:
+        return subprocess.run(args, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, '', f'timed out after {timeout}s')
 
 def executables():
     return targets.executables(block_connect=CONFIG['block_connect'])
@@ -210,6 +213,28 @@ def block_modes(state, paths, sticky=None):
 def job_label(label):
     return targets.job_label(label, block_connect=CONFIG['block_connect'])
 
+def user_launch_agent_scans(uids, homedir=pwd.getpwuid):
+    """Per-user ~/Library/LaunchAgents for login uids. Do not follow a symlink folder."""
+    scans = []
+    for uid in uids:
+        if uid < 500:
+            continue
+        try:
+            home = homedir(uid).pw_dir
+        except (KeyError, OSError, AttributeError):
+            continue
+        if not home:
+            continue
+        folder = Path(home) / 'Library' / 'LaunchAgents'
+        try:
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+        except OSError:
+            continue
+        scans.append((folder, [f'gui/{uid}']))
+    return scans
+
+
 def jobs():
     global SESSION_LOOKUP_HEALTHY
     result = {('system', 'com.jamfsoftware.task.1'): (None, False),
@@ -224,6 +249,7 @@ def jobs():
         SESSION_LOOKUP_HEALTHY = True
     scans = [(Path('/Library/LaunchDaemons'), ['system']),
              (Path('/Library/LaunchAgents'), [f'gui/{u}' for u in uids if u >= 500])]
+    scans.extend(user_launch_agent_scans(uids))
     for folder, domains in scans:
         for path in folder.glob('*.plist'):
             if path.is_symlink():
@@ -239,38 +265,84 @@ def jobs():
                     result[(domain, label)] = (str(path), bool(data.get('Disabled', False)))
     return result
 
+def _job_override_disabled(overrides, label):
+    return overrides.get(label) in ('true', 'disabled')
+
+
+def _record_job_current(state, key, **fields):
+    with STATE_LOCK:
+        if key in state['jobs']:
+            state['jobs'][key].update(fields)
+            save_state(state)
+
+
 def block_jobs(state):
-    failures, overrides = [], {}
+    failures, overrides, timed_out = [], {}, set()
     for (domain, label), (path, default_disabled) in jobs().items():
-        if domain not in overrides:
-            status = command('/bin/launchctl', 'print-disabled', domain)
-            if status.returncode:
-                overrides[domain] = None
-            else:
-                overrides[domain] = dict(re.findall(r'"([^"\n]+)"\s*=>\s*(true|false|disabled|enabled)', status.stdout))
-        if overrides[domain] is None:
-            if domain == 'system': failures.append('Cannot read launchd system state')
-            continue
         key = f'{domain}/{label}'
-        is_loaded = command('/bin/launchctl', 'print', key).returncode == 0
+        recorded = state['jobs'].get(key) or {}
+        if domain not in overrides:
+            status = command('/bin/launchctl', 'print-disabled', domain, timeout=3)
+            if status.returncode == 124:
+                overrides[domain] = {}
+                timed_out.add(domain)
+            elif status.returncode:
+                overrides[domain] = None
+                if domain == 'system':
+                    failures.append('Cannot read launchd system state')
+            else:
+                overrides[domain] = dict(re.findall(
+                    r'"([^"\n]+)"\s*=>\s*(true|false|disabled|enabled)', status.stdout))
+        if overrides[domain] is None and domain not in timed_out:
+            continue
+        override_map = overrides[domain] or {}
+        currently_disabled = _job_override_disabled(override_map, label)
+        already_off = recorded.get('current_loaded') is False and (
+            currently_disabled or (domain in timed_out and recorded.get('current_disabled')))
+        if already_off:
+            continue
+        printed = command('/bin/launchctl', 'print', key, timeout=3)
+        if printed.returncode == 124:
+            is_loaded = recorded.get('current_loaded')
+            if is_loaded is None:
+                is_loaded = recorded.get('loaded', True)
+        else:
+            is_loaded = printed.returncode == 0
         with STATE_LOCK:
             if key not in state['jobs']:
-                original = overrides[domain].get(label)
-                state['jobs'][key] = {'disabled': original in ('true', 'disabled') if original is not None else default_disabled,
-                                      'loaded': is_loaded, 'path': path}
+                original = override_map.get(label) if override_map else None
+                state['jobs'][key] = {
+                    'disabled': original in ('true', 'disabled') if original is not None else default_disabled,
+                    'loaded': is_loaded,
+                    'path': path,
+                    'current_loaded': is_loaded,
+                    'current_disabled': currently_disabled,
+                }
                 save_state(state)
-        if overrides[domain].get(label) not in ('true', 'disabled'):
+        need_disable = not currently_disabled and not recorded.get('current_disabled')
+        if domain in timed_out:
+            need_disable = not recorded.get('current_disabled')
+        if need_disable:
             action = command('/bin/launchctl', 'disable', key)
-            if action.returncode:
+            if action.returncode == 124:
+                pass
+            elif action.returncode:
                 failures.append(f'Could not disable {key}: {action.stderr.strip()}')
                 continue
-            log(f'Launch job disabled: {key}')
+            else:
+                log(f'Launch job disabled: {key}')
+                _record_job_current(state, key, current_disabled=True)
         if is_loaded:
             action = command('/bin/launchctl', 'bootout', key)
-            if action.returncode and command('/bin/launchctl', 'print', key).returncode == 0:
-                failures.append(f'Could not unload {key}: {action.stderr.strip()}')
+            if action.returncode == 124:
+                pass
+            elif action.returncode:
+                still = command('/bin/launchctl', 'print', key, timeout=3)
+                if still.returncode == 0:
+                    failures.append(f'Could not unload {key}: {action.stderr.strip()}')
             else:
                 log(f'Launch job unloaded: {key}')
+                _record_job_current(state, key, current_loaded=False)
     return failures
 
 def restore_modes(state):
@@ -322,8 +394,10 @@ def restore(state):
 
 def sync_network(mode, state, announce=True):
     try:
-        failures, _commands = network.sync(mode, ROOT, state, policy_path=ROOT / 'network_policy.json')
-    except (OSError, ValueError, TypeError) as error:
+        failures, _commands = network.sync(
+            mode, ROOT, state, policy_path=ROOT / 'network_policy.json',
+            kill_states=announce and mode != 'off')
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
         return [str(error)]
     messages = [item for item in failures if item]
     try:

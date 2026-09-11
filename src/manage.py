@@ -349,7 +349,7 @@ def status():
     else:
         print('Activity snapshot: absent')
     print(f'Undo state: {state_path}')
-    print('MDM enrollment stays intact. Network On/Yeet can deny check-in.')
+    print('MDM enrollment stays intact. Network On denies Jamf and Apple HTTPS check-in; Yeet also denies APNs.')
 
 
 def main():
