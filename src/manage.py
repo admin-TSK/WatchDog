@@ -82,6 +82,27 @@ def service_loaded(label):
     return run('/bin/launchctl', 'print', f'system/{label}', check=False).returncode == 0
 
 
+def service_output(label):
+    result = run('/bin/launchctl', 'print', f'system/{label}', check=False)
+    return result.returncode, (result.stdout or '') + (result.stderr or '')
+
+
+def service_running_text(text):
+    return 'state = running' in text
+
+
+def wait_for_service(label, attempts=20, delay=0.5, sleeper=time.sleep):
+    last = ''
+    code = 1
+    for _ in range(attempts):
+        code, last = service_output(label)
+        if code == 0 and service_running_text(last):
+            return last
+        sleeper(delay)
+    snippet = last.strip() or f'launchctl print exited {code}'
+    raise RuntimeError('WatchDog did not remain running.\n' + snippet[-2000:])
+
+
 def installed():
     """Recognize current and legacy installs without embedding a site-specific label."""
     candidates = [PLIST, *sorted(LAUNCHDAEMONS.glob('*.jamf-test-blocker.plist'))]
@@ -196,10 +217,7 @@ def install():
         print(first.stdout, end='')
         run('/bin/launchctl', 'enable', f'system/{LABEL}')
         run('/bin/launchctl', 'bootstrap', 'system', str(PLIST))
-        time.sleep(1)
-        check = run('/bin/launchctl', 'print', f'system/{LABEL}').stdout
-        if 'state = running' not in check:
-            raise RuntimeError('WatchDog did not remain running.')
+        wait_for_service(LABEL)
         state = json.loads((ROOT / 'state.json').read_text())
         for path in state['modes']:
             if Path(path).exists() and not Path(path).is_symlink() and stat.S_IMODE(os.stat(path).st_mode) & 0o111:
@@ -218,6 +236,30 @@ def install():
         raise
 
 
+INSTALL_FILES = (
+    'watchdog', 'jamf-test-blocker', 'guard.py', 'processes.py', 'targets.py', 'shields.py',
+    'network.py', 'network_policy.json', 'network-status.json', 'pf.anchor',
+    'run-guard', 'state.json', 'state.tmp', 'installation.json', 'shields.json',
+)
+
+
+def _remove_install_root(root):
+    if not root.exists():
+        return
+    if root.is_symlink():
+        raise RuntimeError(f'Refusing a symbolic-link installation folder: {root}')
+    for name in INSTALL_FILES:
+        (root / name).unlink(missing_ok=True)
+    (root / '.DS_Store').unlink(missing_ok=True)
+    cache = root / '__pycache__'
+    if cache.is_dir() and not cache.is_symlink():
+        shutil.rmtree(cache)
+    leftovers = sorted(path.name for path in root.iterdir())
+    if leftovers:
+        raise RuntimeError('WatchDog folder still has unexpected files: ' + ', '.join(leftovers))
+    root.rmdir()
+
+
 def uninstall():
     existing = installed()
     if existing is None:
@@ -226,7 +268,15 @@ def uninstall():
             data = json.loads(config.read_text())
             existing = (ROOT, PLIST, data['label'], data['python'])
         elif ROOT.exists() or LEGACY_ROOT.exists():
-            raise RuntimeError('Installation data is incomplete. Retain the folder and recover from its undo record before removing files.')
+            for path in (ROOT, LEGACY_ROOT):
+                if path.exists() and {item.name for item in path.iterdir()} - {'__pycache__', '.DS_Store'}:
+                    raise RuntimeError('Installation data is incomplete. Retain the folder and recover from its undo record before removing files.')
+            _remove_install_root(ROOT)
+            _remove_install_root(LEGACY_ROOT)
+            PLIST.unlink(missing_ok=True)
+            NEWSYSLOG.unlink(missing_ok=True)
+            print('WatchDog leftover install folder removed.')
+            return
         else:
             print('WatchDog is not installed.')
             return
@@ -251,11 +301,7 @@ def uninstall():
     _flush_network(root, python)
     plist.unlink(missing_ok=True)
     NEWSYSLOG.unlink(missing_ok=True)
-    for name in ('watchdog', 'jamf-test-blocker', 'guard.py', 'processes.py', 'targets.py', 'shields.py',
-                 'network.py', 'network_policy.json', 'network-status.json', 'pf.anchor',
-                 'run-guard', 'state.json', 'state.tmp', 'installation.json', 'shields.json'):
-        (root / name).unlink(missing_ok=True)
-    root.rmdir()
+    _remove_install_root(root)
     print('WatchDog removed. Recorded settings restored; MDM enrollment unchanged.')
 
 

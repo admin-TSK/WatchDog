@@ -7,9 +7,26 @@ struct Activity: Decodable, Identifiable {
     let title: String
     let detail: String
     let resolved_at: Double?
+    let count: Int?
 
     var isResolved: Bool { resolved_at != nil }
     var displayTitle: String { isResolved ? "Resolved · \(title)" : title }
+    var countLabel: String? {
+        guard let count, count > 1 else { return nil }
+        return "\(count) files"
+    }
+    static func unreadBlocks(total: Int, seen: Int) -> Int { max(0, total - seen) }
+    static func iconTitle(unread: Int) -> String {
+        guard unread > 0 else { return "" }
+        return unread > 99 ? " 99+" : " \(unread)"
+    }
+    static func displayVersion(short: String?, build: String?) -> String {
+        let version = (short ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let buildNumber = (build ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if version.isEmpty { return buildNumber }
+        if buildNumber.isEmpty || buildNumber == version { return version }
+        return "\(version) (\(buildNumber))"
+    }
     var symbol: String {
         if isResolved { return "checkmark.circle" }
         switch kind {

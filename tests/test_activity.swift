@@ -23,6 +23,22 @@ import Foundation
         let loaded = try JSONDecoder().decode(Activity.self, from: loadedData)
         precondition(!loaded.notifiesUser)
         precondition([partial, loaded].filter(\.notifiesUser).isEmpty)
+        precondition(events[2].count == nil)
+        precondition(events[2].countLabel == nil)
+        precondition(Activity.unreadBlocks(total: 20, seen: 15) == 5)
+        precondition(Activity.unreadBlocks(total: 10, seen: 20) == 0)
+        precondition(Activity.iconTitle(unread: 0) == "")
+        precondition(Activity.iconTitle(unread: 7) == " 7")
+        precondition(Activity.iconTitle(unread: 99) == " 99")
+        precondition(Activity.iconTitle(unread: 100) == " 99+")
+        precondition(Activity.displayVersion(short: "0.4.0", build: "16") == "0.4.0 (16)")
+        precondition(Activity.displayVersion(short: "0.4.0", build: "0.4.0") == "0.4.0")
+        precondition(Activity.displayVersion(short: "0.4.0", build: "") == "0.4.0")
+        precondition(Activity.displayVersion(short: "", build: "16") == "16")
+        let countedData = #"{"id":"c","timestamp":80,"kind":"permission","title":"Execution permission blocked","detail":"jamf and 23 more","count":24}"#.data(using: .utf8)!
+        let counted = try JSONDecoder().decode(Activity.self, from: countedData)
+        precondition(counted.count == 24)
+        precondition(counted.countLabel == "24 files")
         print("PASS: resolved history stays available; new warnings remain visible and unread.")
     }
 }

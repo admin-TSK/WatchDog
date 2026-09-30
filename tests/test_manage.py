@@ -65,6 +65,22 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('/usr/bin/python3', text)
         self.assertIn('sys.version_info < (3, 10)', text)
 
+    def test_wait_for_service_retries_until_running(self):
+        replies = [
+            subprocess.CompletedProcess([], 0, 'state = pending\n', ''),
+            subprocess.CompletedProcess([], 0, 'state = running\n pid = 9\n', ''),
+        ]
+        sleeps = []
+        with patch.object(manage, 'run', side_effect=replies):
+            text = manage.wait_for_service('local.watchdog.guard', sleeper=sleeps.append)
+        self.assertIn('state = running', text)
+        self.assertEqual(sleeps, [0.5])
+
+    def test_wait_for_service_reports_print_output(self):
+        with patch.object(manage, 'run', return_value=subprocess.CompletedProcess([], 0, 'state = not running\nlast exit code = 1\n', '')):
+            with self.assertRaisesRegex(RuntimeError, 'last exit code = 1'):
+                manage.wait_for_service('local.watchdog.guard', attempts=2, sleeper=lambda _: None)
+
     def test_legacy_detection_and_duplicate_install_refusal(self):
         expected = self.fixture(legacy=True)
         self.assertEqual(manage.installed(), expected)
@@ -76,6 +92,9 @@ class LifecycleTests(unittest.TestCase):
 
     def test_uninstall_restores_before_removal(self):
         root, plist, label, python = self.fixture()
+        cache = root / '__pycache__'
+        cache.mkdir()
+        (cache / 'guard.cpython-314.pyc').write_bytes(b'x')
         def command(*args, **kwargs):
             if '--restore' in args:
                 self.assertTrue((root / 'state.json').exists())
@@ -88,6 +107,15 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len(list(manage.AUDIT_DIR.glob('*.json'))), 1)
         self.assertEqual(commands.call_args_list[0].args[:2], ('/bin/launchctl', 'bootout'))
         self.assertIn('--restore', commands.call_args_list[1].args)
+
+    def test_uninstall_clears_leftover_cache_folder(self):
+        manage.ROOT.mkdir()
+        cache = manage.ROOT / '__pycache__'
+        cache.mkdir()
+        (cache / 'guard.cpython-314.pyc').write_bytes(b'x')
+        (manage.ROOT / '.DS_Store').write_bytes(b'x')
+        manage.uninstall()
+        self.assertFalse(manage.ROOT.exists())
 
     def test_failed_restore_retains_recovery_files(self):
         root, plist, label, python = self.fixture(legacy=True)

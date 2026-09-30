@@ -200,6 +200,27 @@ class EventTests(unittest.TestCase):
             self.assertEqual(upgraded.events[0]['title'], 'Packet filter state kill timed out')
             self.assertEqual(upgraded.parser_version, 6)
 
+    def test_permission_burst_coalesces_and_counts_blocks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'log'
+            path.write_text(
+                '2026-09-12 10:00:00 Execution blocked: /example/jamf\n'
+                '2026-09-12 10:00:00 Execution blocked: /example/jamfHelper\n'
+                '2026-09-12 10:00:01 Shield permissions off.\n'
+                '2026-09-12 10:00:02 Killed framework process or observed descendant PID 9.\n')
+            feed = events.Feed()
+            feed.read(path, 100)
+            self.assertEqual(len(feed.events), 3)
+            self.assertEqual(feed.events[0]['kind'], 'permission')
+            self.assertEqual(feed.events[0]['count'], 2)
+            self.assertEqual(feed.events[0]['detail'], 'jamf and 1 more')
+            self.assertEqual(feed.events[1]['kind'], 'shield')
+            self.assertEqual(feed.events[2]['kind'], 'process')
+            self.assertEqual(feed.block_total, 3)
+            self.assertEqual(feed.process_total, 1)
+            self.assertEqual(feed.action_total, 4)
+            self.assertEqual(feed.saved()['block_total'], 3)
+
     def test_heal_guard_is_rate_limited(self):
         config = {'guard_label': 'test.guard'}
         with patch.object(events.subprocess, 'run') as command, patch.object(Path, 'exists', return_value=True):

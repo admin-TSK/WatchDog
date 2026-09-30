@@ -13,6 +13,7 @@ struct Snapshot: Decodable {
     let job_count: Int
     let process_total: Int
     let action_total: Int
+    let block_total: Int?
     let events: [Activity]
     let shields: ShieldState?
     let network: NetworkStatus?
@@ -24,6 +25,7 @@ struct Snapshot: Decodable {
     @Published var now = Date()
     @Published var readFailure = false
     @Published var lastViewed = UserDefaults.standard.object(forKey: "lastViewed") as? Date ?? Date()
+    @Published var seenBlockTotal = UserDefaults.standard.object(forKey: "seenBlockTotal") as? Int ?? 0
     @Published var notifications = UserDefaults.standard.bool(forKey: "notifications")
     @Published var notificationNote = ""
     @Published var launchAtLogin = false
@@ -32,7 +34,9 @@ struct Snapshot: Decodable {
     @Published var pendingNetwork: String?
     var onChange: (() -> Void)?
     private var timer: Timer?
+    private var activityToken: NSObjectProtocol?
     private var previousIDs: Set<String>?
+    private var seededBlockTotal = UserDefaults.standard.object(forKey: "seenBlockTotal") != nil
     let feedURL: URL
     let demo: Bool
     var loginURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/local.watchdog.menubar.plist") }
@@ -65,7 +69,12 @@ struct Snapshot: Decodable {
         if fresh { return "Protection needs attention" }
         return "Activity feed unavailable"
     }
-    var unread: Int { snapshot?.events.filter { $0.countsAsUnread(since: lastViewed.timeIntervalSince1970) }.count ?? 0 }
+    var unread: Int { Activity.unreadBlocks(total: snapshot?.block_total ?? 0, seen: seenBlockTotal) }
+    var appVersion: String {
+        Activity.displayVersion(
+            short: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
+    }
     var resolvedCount: Int { snapshot?.events.filter { $0.isResolved }.count ?? 0 }
     var visibleEvents: [Activity] { Activity.visible(snapshot?.events ?? [], showResolved: showResolved) }
 
@@ -78,9 +87,19 @@ struct Snapshot: Decodable {
             feedURL = URL(fileURLWithPath: "/Library/Application Support/WatchDog Status/events.json")
         }
         launchAtLogin = FileManager.default.fileExists(atPath: loginURL.path)
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "WatchDog activity feed")
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+    deinit {
+        if let activityToken {
+            ProcessInfo.processInfo.endActivity(activityToken)
         }
     }
     func refresh() {
@@ -96,6 +115,11 @@ struct Snapshot: Decodable {
                 if let latest = new.first { notify(latest, count: new.count) }
             }
             previousIDs = Set(value.events.map(\.id))
+            if let total = value.block_total, !seededBlockTotal {
+                seenBlockTotal = total
+                seededBlockTotal = true
+                UserDefaults.standard.set(total, forKey: "seenBlockTotal")
+            }
             snapshot = value
             readFailure = false
             if let live = value.shields {
@@ -108,6 +132,11 @@ struct Snapshot: Decodable {
     func markRead() {
         lastViewed = Date()
         UserDefaults.standard.set(lastViewed, forKey: "lastViewed")
+        if let total = snapshot?.block_total {
+            seenBlockTotal = total
+            seededBlockTotal = true
+            UserDefaults.standard.set(total, forKey: "seenBlockTotal")
+        }
         onChange?()
     }
     func setNotifications(_ enabled: Bool) {
@@ -291,13 +320,17 @@ func menuBarLogo() -> NSImage? {
 struct ActivityPanel: View {
     @ObservedObject var store: ActivityStore
     var panelSize = CGSize(width: 410, height: 820)
+    var headerCaption: String {
+        let title = store.demo ? "DEMO · SAMPLE ACTIVITY" : "LOCAL FRAMEWORK MONITOR"
+        return store.appVersion.isEmpty ? title : "\(title) · \(store.appVersion)"
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 WatchDogLogo(size: 34)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("WatchDog").font(.system(size: 23, weight: .bold, design: .rounded))
-                    Text(store.demo ? "DEMO · SAMPLE ACTIVITY" : "LOCAL FRAMEWORK MONITOR").font(.system(size: 9, weight: .semibold)).tracking(1.3).foregroundStyle(.secondary)
+                    Text(headerCaption).font(.system(size: 9, weight: .semibold)).tracking(1.3).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Circle().fill(store.active ? accent : store.paused ? Color.secondary : .orange).frame(width: 8, height: 8)
@@ -352,6 +385,9 @@ struct ActivityPanel: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(alignment: .firstTextBaseline) {
                                         Text(event.displayTitle).font(.system(size: 12, weight: .semibold))
+                                        if let countLabel = event.countLabel {
+                                            Text(countLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                                        }
                                         Spacer(minLength: 5)
                                         Text(event.timestamp.map { Date(timeIntervalSince1970: $0).formatted(date: .omitted, time: .standard) } ?? "Earlier")
                                             .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
@@ -526,7 +562,7 @@ struct ActivityPanel: View {
         item.button?.image = menuBarLogo()
         item.button?.image?.isTemplate = false
         item.button?.alphaValue = store.active ? 1 : store.paused ? 0.45 : 0.8
-        item.button?.title = store.unread > 0 ? " \(min(store.unread, 99))" : ""
+        item.button?.title = Activity.iconTitle(unread: store.unread)
         item.button?.toolTip = "WatchDog · \(store.status)"
     }
     @objc func toggle() {

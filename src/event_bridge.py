@@ -31,6 +31,8 @@ PUBLIC = Path('/Library/Application Support/WatchDog Status')
 REQUESTS = PUBLIC / 'requests'
 STOP = False
 MAX_EVENTS = 100
+COALESCE_SECONDS = 2
+BLOCK_KINDS = frozenset({'process', 'permission', 'job'})
 JOB_LABEL = re.compile(r'^com\.jamf(?:software|\.management|\.connect|\.appinstallers|\.selfservice)[a-zA-Z0-9_.]*$')
 
 
@@ -123,8 +125,35 @@ class Feed:
         self.cursor = saved.get('cursor', {})
         self.process_total = saved.get('process_total', 0)
         self.action_total = saved.get('action_total', 0)
+        self.block_total = saved.get('block_total', 0)
         self.parser_version = saved.get('parser_version', 1)
         self.session_recovered_at = saved.get('session_recovered_at')
+
+    def _record(self, event):
+        """Append or coalesce a parsed event. Recovery markers are not recorded here."""
+        self.action_total += 1
+        self.process_total += int(event['kind'] == 'process')
+        if event['kind'] in BLOCK_KINDS:
+            self.block_total += 1
+        if event.get('kind') == 'permission' and self.events:
+            last = self.events[-1]
+            left, right = last.get('timestamp'), event.get('timestamp')
+            if (last.get('kind') == 'permission' and last.get('title') == event.get('title')
+                    and left is not None and right is not None
+                    and abs(right - left) <= COALESCE_SECONDS):
+                last['count'] = int(last.get('count') or 1) + 1
+                first = last.get('first_detail') or last.get('detail') or 'Jamf framework executable'
+                last['first_detail'] = first
+                extra = last['count'] - 1
+                last['detail'] = f'{first} and {extra} more' if extra else first
+                last['timestamp'] = right
+                return
+        if event.get('kind') == 'permission':
+            event = dict(event)
+            event['count'] = 1
+            event['first_detail'] = event.get('detail')
+        self.events.append(event)
+        self.events = self.events[-MAX_EVENTS:]
 
     def resolve_session_warnings(self):
         if self.session_recovered_at is None:
@@ -186,10 +215,7 @@ class Feed:
                             if event['timestamp'] is not None:
                                 self.session_recovered_at = max(self.session_recovered_at or 0, event['timestamp'])
                         else:
-                            self.events.append(event)
-                            self.events = self.events[-MAX_EVENTS:]
-                            self.action_total += 1
-                            self.process_total += int(event['kind'] == 'process')
+                            self._record(event)
                 self.cursor = {'inode': signature, 'offset': stream.tell()}
                 self.resolve_session_warnings()
         except FileNotFoundError:
@@ -197,7 +223,8 @@ class Feed:
 
     def saved(self):
         return {'parser_version': self.parser_version, 'session_recovered_at': self.session_recovered_at,
-                'events': self.events, 'cursor': self.cursor, 'process_total': self.process_total, 'action_total': self.action_total}
+                'events': self.events, 'cursor': self.cursor, 'process_total': self.process_total,
+                'action_total': self.action_total, 'block_total': self.block_total}
 
 
 def consume_shield_requests(guard_root):
@@ -297,7 +324,7 @@ def main():
                     state = health(config)
             snapshot = {'schema': 1, 'updated_at': now, **state,
                         'events': list(reversed(feed.events)), 'process_total': feed.process_total,
-                        'action_total': feed.action_total}
+                        'action_total': feed.action_total, 'block_total': feed.block_total}
             saved = feed.saved()
             if saved != previous:
                 atomic_json(state_path, saved, 0o600)

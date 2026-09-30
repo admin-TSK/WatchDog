@@ -39,10 +39,14 @@ cat > "$appiconset/Contents.json" <<'JSON'
   "info":{"author":"xcode","version":1}
 }
 JSON
-xcrun actool --compile "$resources" --platform macosx --minimum-deployment-target 14.0 \
-  --app-icon AppIcon --output-partial-info-plist "$REPO_ROOT/build/WatchDog-icon.plist" \
-  --development-region en --target-device mac --enable-on-demand-resources NO \
-  "$REPO_ROOT/build/WatchDog.xcassets"
+if /usr/bin/xcrun --find actool >/dev/null 2>&1; then
+    xcrun actool --compile "$resources" --platform macosx --minimum-deployment-target 14.0 \
+      --app-icon AppIcon --output-partial-info-plist "$REPO_ROOT/build/WatchDog-icon.plist" \
+      --development-region en --target-device mac --enable-on-demand-resources NO \
+      "$REPO_ROOT/build/WatchDog.xcassets"
+else
+    echo 'WatchDog: actool not found; using WatchDog.icns without Assets.car'
+fi
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 for arch in arm64 x86_64; do
     xcrun swiftc -O -parse-as-library -swift-version 5 -sdk "$sdk" -target "${arch}-apple-macosx14.0" \
@@ -56,7 +60,7 @@ import plistlib, sys
 app=Path(sys.argv[1])
 info={'CFBundleIdentifier':'local.watchdog.menubar','CFBundleName':'WatchDog','CFBundleDisplayName':'WatchDog',
       'CFBundleExecutable':'WatchDog','CFBundlePackageType':'APPL','CFBundleShortVersionString':Path(sys.argv[2]).read_text().strip(),
-      'CFBundleVersion':'15','LSMinimumSystemVersion':'14.0','LSUIElement':True,
+      'CFBundleVersion':'16','LSMinimumSystemVersion':'14.0','LSUIElement':True,
       'CFBundleIconFile':'WatchDog','CFBundleIconName':'AppIcon',
       'NSHighResolutionCapable':True,'NSPrincipalClass':'NSApplication'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
