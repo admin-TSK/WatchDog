@@ -110,6 +110,17 @@ CONNECT_WARNING = (
 )
 
 
+def connect_path(path):
+    text = str(path)
+    if text in CONNECT_EXACT_PATHS:
+        return True
+    return any(text.startswith(prefix) for prefix in CONNECT_PREFIXES)
+
+
+def connect_job(label):
+    return isinstance(label, str) and (label == 'com.jamf.connect' or label.startswith('com.jamf.connect.'))
+
+
 def excluded(path):
     text = str(path)
     for prefix in EXCLUDE_PREFIXES:

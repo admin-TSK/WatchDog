@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.5.2 — 2026-10-02
+
+- Software update now deletes only the scheduled OS enforcement and the OS-upgrade keys (automatic OS install, managed notifications, and serializedKeys). XProtect, Rapid Security Response, and security-data installs stay.
+- Turning that shield off puts those removed entries back into the current file. It no longer restores an older copy of the file, and it does not delete a file that appeared later.
+- WatchDog no longer kickstarts softwareupdated after a strip. A schedule already in memory may remain until that process reloads; the tile says so.
+- Installs and declaration assets report partial and add no deny, because package hosts are not in the software-update file. Shared download networks (S3, CloudFront, Akamai, Fastly) are never denied.
+- Turning Jobs, Sticky, or Permissions off is applied by the loop that owns that shield, so one loop can no longer consume the other's off edge.
+- Uninstall disables the guard and stops the event bridge before bootout, so the bridge cannot start the guard again during restore.
+- Turning Jamf Connect off restores and forgets only Connect paths and jobs.
+- The software-update file is replaced atomically and keeps its owner. Shield drops must be owned by root or the console user.
+
+## 0.5.1 — 2026-10-01
+
+- DDM shields no longer deny the App Store, Apple’s update servers, Apple Push, or the Jamf management host. Those destinations stay available for normal use.
+- Installs and declaration assets deny only a host read from a declaration URL that is not a shared Apple service and not the Jamf server.
+- Management wake and Management channel are no longer shown. A saved value for either shield is ignored.
+- Software update still snapshots and restores only the declarative software-update file. A scheduled enforcement (target OS version and local date) is removed from that file; other software-update settings and Apple’s update servers stay. The software-update shield is on by default.
+
 ## 0.5.0 — 2026-10-01
 
 - Added DDM shields for Jamf Blueprints: management channel, management wake, software update, installs, and declaration assets. All default off.

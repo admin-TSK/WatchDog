@@ -105,8 +105,13 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(root.exists())
         self.assertFalse(plist.exists())
         self.assertEqual(len(list(manage.AUDIT_DIR.glob('*.json'))), 1)
-        self.assertEqual(commands.call_args_list[0].args[:2], ('/bin/launchctl', 'bootout'))
-        self.assertIn('--restore', commands.call_args_list[1].args)
+        launch = [call.args for call in commands.call_args_list if call.args and call.args[0] == '/bin/launchctl']
+        self.assertEqual(launch[0][:3], ('/bin/launchctl', 'disable', 'system/local.watchdog.events'))
+        self.assertEqual(launch[1][:3], ('/bin/launchctl', 'bootout', 'system/local.watchdog.events'))
+        self.assertEqual(launch[2][:3], ('/bin/launchctl', 'disable', f'system/{label}'))
+        self.assertEqual(launch[3][:2], ('/bin/launchctl', 'bootout'))
+        restore_at = next(index for index, call in enumerate(commands.call_args_list) if '--restore' in call.args)
+        self.assertGreater(restore_at, 3)
 
     def test_uninstall_clears_leftover_cache_folder(self):
         manage.ROOT.mkdir()

@@ -243,15 +243,11 @@ struct DdmStatus: Decodable, Equatable {
             launchAtLogin = enabled
         } catch { notificationNote = "Couldn’t update the login setting: \(error.localizedDescription)" }
     }
-    var channelForced: Bool {
-        snapshot?.ddm?.tiles["ddm-channel"] == "forced" || shields.ddmUpdate || shields.ddmInstalls
-    }
     func setShield(_ id: String, enabled: Bool) {
         if id == "connect" && enabled && !confirmConnect() { return }
-        if id == "ddm-push" && enabled && !confirmPush() { return }
+        if id == "ddm-push" || id == "ddm-channel" { return }
         if id == "ddm-update" && enabled && !confirmUpdate() { return }
         if id == "ddm-installs" && enabled && !confirmInstalls() { return }
-        if id == "ddm-channel" && !enabled && channelForced { return }
         pending[id] = enabled
         if demo { onChange?(); return }
         let directory = feedURL.deletingLastPathComponent().appendingPathComponent("requests")
@@ -292,28 +288,19 @@ struct DdmStatus: Decodable, Equatable {
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn
     }
-    private func confirmPush() -> Bool {
-        let alert = NSAlert()
-        alert.messageText = "Block management wake?"
-        alert.informativeText = "This blocks Apple Push ranges. iMessage and other push services will break. Enrollment stays."
-        alert.addButton(withTitle: "Block")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        return alert.runModal() == .alertFirstButtonReturn
-    }
     private func confirmUpdate() -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Restrict software update?"
-        alert.informativeText = "Enforced update downloads pause, including updates you start yourself. WatchDog snapshots the applied state before removing it, and writes that snapshot back when you turn this off."
-        alert.addButton(withTitle: "Restrict")
+        alert.messageText = "Remove applied DDM update settings?"
+        alert.informativeText = "WatchDog removes a managed OS update schedule from the software update file and puts those entries back when you turn this off. Security updates stay on. Apple’s update servers stay available. A schedule already loaded in memory may remain until softwareupdated reloads."
+        alert.addButton(withTitle: "Remove applied state")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn
     }
     private func confirmInstalls() -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Restrict blueprint installs?"
-        alert.informativeText = "App and package downloads pause, including one already in progress. Apps and packages already on disk stay installed."
+        alert.messageText = "Restrict Blueprint package hosts?"
+        alert.informativeText = "WatchDog does not see a Blueprint package host, so this shield does not block downloads. The App Store stays open. A shared download network is never denied."
         alert.addButton(withTitle: "Restrict")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -478,19 +465,18 @@ struct ActivityPanel: View {
         switch status {
         case "forced": return "Forced while installs or software update are on."
         case "restricted": return "Restricted. A loaded rule is not a confirmed deny."
-        case "removed": return "Applied software update state removed."
-        case "reverted": return "Snapshotted software update state restored."
+        case "removed": return "Managed OS update record removed from the file. A schedule already in memory may remain."
+        case "reverted": return "Removed update entries were put back."
         case "covered": return "Already covered by Network."
-        case "partial": return "A destination could not be expressed."
-        case "not_removed": return "Not removed. No restorable snapshot."
-        case "removal_failed": return "Removal failed. The snapshot was kept."
+        case "partial": return "No declaration host is visible, so nothing is denied."
+        case "not_removed": return "Not removed."
+        case "removal_failed": return "Could not update the software update file."
         default: return nil
         }
     }
     func shieldTile(_ spec: ShieldSpec) -> some View {
         let on = store.shields.enabled(spec.id)
         let status = store.snapshot?.ddm?.tiles[spec.id]
-        let forced = spec.id == "ddm-channel" && store.channelForced
         let note = (spec.id == "ddm-installs" && (status == "restricted" || status == nil)) ? spec.detail : (ddmNote(status) ?? spec.detail)
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center) {
@@ -502,7 +488,6 @@ struct ActivityPanel: View {
                     get: { store.shields.enabled(spec.id) },
                     set: { store.setShield(spec.id, enabled: $0) }
                 )).toggleStyle(.switch).controlSize(.mini).labelsHidden()
-                    .disabled(forced)
                     .accessibilityLabel(spec.title)
             }
             Text(spec.title).font(.system(size: 12, weight: .semibold))

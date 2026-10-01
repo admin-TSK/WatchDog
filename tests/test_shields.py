@@ -1,6 +1,7 @@
 """Isolated shield toggle tests. No live Jamf paths."""
 import importlib.util
 import json
+import subprocess
 import tempfile
 import threading
 import time
@@ -138,6 +139,105 @@ class ShieldTests(unittest.TestCase):
         self.assertTrue(announce)
         needed, announce = guard.should_sync_network('off', 'off', 0.0, now)
         self.assertFalse(needed)
+
+    def test_jobs_off_survives_a_consumed_refresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = dict(shields.DEFAULTS)
+            payload['jobs'] = False
+            (root / 'shields.json').write_text(json.dumps(payload))
+            guard.SHIELDS = dict(shields.DEFAULTS)
+            guard.SHIELDS_READY = True
+            state = {'version': 2, 'modes': {}, 'jobs': {}, 'flags': {}, 'pf': {}, 'ddm': {}}
+            try:
+                with patch.object(guard, 'STATE', root / 'state.json'), \
+                     patch.object(guard, 'restore_jobs', return_value=[]) as restored, \
+                     patch.object(guard, 'block_jobs', return_value=[]) as blocked, \
+                     patch.object(guard, 'release_connect', return_value=[]), \
+                     patch.object(guard, 'log'):
+                    guard.refresh_shields()
+                    background = guard.BackgroundChecks(state, threading.Event())
+                    current, _previous = guard.refresh_shields()
+                    background.apply_shield_edges(current)
+                restored.assert_called_once()
+                blocked.assert_not_called()
+            finally:
+                guard.SHIELDS = dict(shields.DEFAULTS)
+                guard.SHIELDS_READY = False
+
+    def test_clear_sticky_restores_only_recorded_flags(self):
+        state = {'modes': {'/a': 0o755, '/b': 0o755}, 'flags': {'/a': 2}}
+        with patch.object(guard, '_set_flags') as setter:
+            self.assertEqual(guard.clear_sticky(state), [])
+        setter.assert_called_once_with(Path('/a'), 2)
+
+    def test_restore_flushes_packet_filter_when_revert_fails(self):
+        state = {'modes': {}, 'jobs': {}, 'flags': {}, 'pf': {}, 'ddm': {}}
+        with patch.object(guard, 'restore_modes', return_value=[]), \
+             patch.object(guard, 'restore_jobs', return_value=[]), \
+             patch.object(guard, 'revert_ddm', return_value=['snapshot failed']), \
+             patch.object(guard, 'sync_network', return_value=[]) as sync:
+            failures = guard.restore(state)
+        self.assertEqual(failures, ['snapshot failed'])
+        sync.assert_called_once()
+        self.assertEqual(sync.call_args.args[0], 'off')
+        self.assertFalse(sync.call_args.kwargs['use_shields'])
+
+    def test_connect_off_restores_and_forgets_only_connect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / 'connect-bin'
+            binary.write_text('x')
+            binary.chmod(0o644)
+            jamf = root / 'jamf'
+            jamf.write_text('x')
+            jamf.chmod(0o644)
+            state = {
+                'version': 2,
+                'modes': {str(binary): 0o755, str(jamf): 0o755},
+                'jobs': {
+                    'system/com.jamf.connect': {'disabled': False, 'loaded': False, 'path': None},
+                    'system/com.jamf.management.daemon': {
+                        'disabled': False, 'loaded': True, 'path': None,
+                    },
+                },
+                'flags': {},
+                'pf': {},
+                'ddm': {},
+            }
+            with patch.object(guard, 'STATE', root / 'state.json'), \
+                 patch.object(guard.targets, 'connect_path', side_effect=lambda path: str(path) == str(binary)), \
+                 patch.object(guard, 'command', return_value=subprocess.CompletedProcess([], 0, '', '')), \
+                 patch.object(guard, 'log'):
+                self.assertEqual(guard.release_connect(state), [])
+            self.assertNotIn(str(binary), state['modes'])
+            self.assertIn(str(jamf), state['modes'])
+            self.assertNotIn('system/com.jamf.connect', state['jobs'])
+            self.assertIn('system/com.jamf.management.daemon', state['jobs'])
+            self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+
+    def test_drop_ignores_other_owners_and_caps_a_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / 'requests'
+            inbox.mkdir()
+            (inbox / 'one.json').write_text(json.dumps({'id': 'jobs', 'enabled': False}))
+            with patch.object(events, 'REQUESTS', inbox), \
+                 patch.object(events, 'request_owner_allowed', return_value=False):
+                result = events.consume_shield_requests(root)
+            self.assertTrue(result['jobs'])
+            self.assertEqual(list(inbox.glob('*.json')), [])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / 'requests'
+            inbox.mkdir()
+            for index in range(events.MAX_REQUESTS + 8):
+                (inbox / f'{index:03d}.json').write_text(json.dumps({'id': 'sticky', 'enabled': True}))
+            with patch.object(events, 'REQUESTS', inbox), \
+                 patch.object(events, 'request_owner_allowed', return_value=True):
+                result = events.consume_shield_requests(root)
+            self.assertTrue(result['sticky'])
+            self.assertEqual(len(list(inbox.glob('*.json'))), 8)
 
 
 if __name__ == '__main__':

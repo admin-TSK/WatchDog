@@ -227,7 +227,7 @@ def install():
         print('Defaults: permission 100 ms, monitor 50 ms. Network Off unless WATCHDOG_NETWORK=on|yeet.')
         print('Optional flags: WATCHDOG_STICKY_BLOCK, WATCHDOG_MATCH_SIGNATURE, WATCHDOG_BLOCK_CONNECT, WATCHDOG_NETWORK.')
     except BaseException:
-        run('/bin/launchctl', 'bootout', f'system/{LABEL}', check=False)
+        _stop_launch_service(LABEL)
         if (ROOT / 'state.json').exists():
             restored = run(python, '-I', str(ROOT / 'guard.py'), '--restore', check=False)
             print(restored.stdout, end='')
@@ -261,6 +261,12 @@ def _remove_install_root(root):
     root.rmdir()
 
 
+def _stop_launch_service(label):
+    """Disable before bootout so a healer cannot bootstrap the job again."""
+    run('/bin/launchctl', 'disable', f'system/{label}', check=False)
+    run('/bin/launchctl', 'bootout', f'system/{label}', check=False)
+
+
 def uninstall():
     existing = installed()
     if existing is None:
@@ -282,8 +288,9 @@ def uninstall():
             print('WatchDog is not installed.')
             return
     root, plist, label, python = existing
+    _stop_launch_service(EVENTS_LABEL)
+    _stop_launch_service(label)
     if service_loaded(label):
-        run('/bin/launchctl', 'bootout', f'system/{label}', check=False)
         deadline = time.time() + 15
         while service_loaded(label) and time.time() < deadline:
             run('/bin/launchctl', 'bootout', f'system/{label}', check=False)

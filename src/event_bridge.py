@@ -90,10 +90,10 @@ def parse_event(line, identity, observed, historical=False):
         event.update(kind='shield', title=line[:-1], detail='Outbound filter updated from Shields.')
     elif line == 'Software update declaration state removed.':
         event.update(kind='shield', title='Software update declaration removed',
-                     detail='Applied software update state was replaced. macOS may still store the declaration.')
+                     detail='A managed OS update record was removed from the software update file. A schedule already in memory may remain.')
     elif line == 'Software update declaration state reverted.':
         event.update(kind='shield', title='Software update declaration reverted',
-                     detail='The snapshotted software update state was written back.')
+                     detail='Removed software update entries were put back. The rest of the file was left as it is.')
     elif line.startswith('DDM declaration types: '):
         detail = line.split(': ', 1)[1].strip()
         if not re.fullmatch(r'[A-Za-z0-9., _-]+', detail):
@@ -242,6 +242,25 @@ class Feed:
                 'action_total': self.action_total, 'block_total': self.block_total}
 
 
+MAX_REQUESTS = 32
+
+
+def console_uid():
+    try:
+        return os.stat('/dev/console').st_uid
+    except OSError:
+        return None
+
+
+def request_owner_allowed(uid, console=None):
+    """Menu-bar drops are owned by root or the console user. Anything else is ignored."""
+    if uid == 0:
+        return True
+    if console is None:
+        console = console_uid()
+    return console is not None and uid == console
+
+
 def consume_shield_requests(guard_root):
     """Apply menu-bar shield requests into the guard's shields.json."""
     path = Path(guard_root) / 'shields.json'
@@ -249,18 +268,27 @@ def consume_shield_requests(guard_root):
     try:
         REQUESTS.mkdir(parents=True, exist_ok=True)
         os.chmod(REQUESTS, 0o1777)
-        items = sorted(REQUESTS.glob('*.json'))
+        items = sorted(REQUESTS.glob('*.json'))[:MAX_REQUESTS]
     except OSError:
         return current
     changed = False
+    console = console_uid()
     for item in items:
         try:
-            if item.is_symlink() or not item.is_file() or item.stat().st_size > 4096:
-                pass
-            else:
-                current = shields.apply(current, json.loads(item.read_text()))
-                changed = True
-        except (OSError, ValueError, TypeError):
+            if item.is_symlink():
+                raise OSError('symlink')
+            fd = os.open(item, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_size > 4096
+                        or not request_owner_allowed(info.st_uid, console)):
+                    pass
+                else:
+                    current = shields.apply(current, json.loads(os.read(fd, 4096).decode()))
+                    changed = True
+            finally:
+                os.close(fd)
+        except (OSError, ValueError, TypeError, UnicodeError):
             pass
         try:
             item.unlink()

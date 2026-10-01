@@ -24,7 +24,7 @@ DEFAULTS = {
     'connect': False,
     'ddm-channel': False,
     'ddm-push': False,
-    'ddm-update': False,
+    'ddm-update': True,
     'ddm-installs': False,
     'ddm-assets': False,
     'network': 'off',
@@ -60,6 +60,9 @@ def normalize(value, config=None):
                 data[key] = bool(value[key])
         if 'network' in value:
             data['network'] = network_mode(value['network'], data['network'])
+    # Retired. A saved true must not come back on.
+    data['ddm-channel'] = False
+    data['ddm-push'] = False
     return data
 
 
@@ -92,9 +95,9 @@ def apply(current, request):
     if not isinstance(request, dict):
         return data
     key = request.get('id')
+    if key in ('ddm-channel', 'ddm-push'):
+        return data
     if key in KEYS and 'enabled' in request:
-        if key == 'ddm-channel' and not request['enabled'] and (data.get('ddm-update') or data.get('ddm-installs')):
-            return data
         data[key] = bool(request['enabled'])
     elif key == 'network':
         if 'mode' in request:

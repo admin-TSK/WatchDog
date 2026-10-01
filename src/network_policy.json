@@ -140,38 +140,6 @@
         "ap-northeast-1-prod-jcds2-file-objects.s3.ap-northeast-1.amazonaws.com"
       ],
       "cidrs": []
-    },
-    {
-      "id": "apple-software-update",
-      "modes": [],
-      "direction": "out",
-      "transport": "tcp",
-      "ports": [443],
-      "hosts": [
-        "gdmf.apple.com",
-        "mesu.apple.com",
-        "swcdn.apple.com",
-        "updates.cdn-apple.com",
-        "appldnld.apple.com",
-        "gg.apple.com",
-        "gs.apple.com",
-        "xp.apple.com"
-      ],
-      "cidrs": []
-    },
-    {
-      "id": "apple-app-store",
-      "modes": [],
-      "direction": "out",
-      "transport": "tcp",
-      "ports": [443],
-      "hosts": [
-        "apps.apple.com",
-        "osxapps.itunes.apple.com",
-        "itunes.apple.com",
-        "su.itunes.apple.com"
-      ],
-      "cidrs": []
     }
   ]
 }

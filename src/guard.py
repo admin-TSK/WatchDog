@@ -95,8 +95,6 @@ def refresh_shields():
                     log(f'Shield {key} {"on" if current[key] else "off"}.')
                     if key == 'connect' and current[key]:
                         log(targets.CONNECT_WARNING)
-                    if key == 'ddm-push' and current[key]:
-                        log(ddm.PUSH_WARNING)
                     if key == 'ddm-update' and current[key]:
                         log(ddm.UPDATE_WARNING)
                     if key == 'ddm-installs' and current[key]:
@@ -171,6 +169,8 @@ def block_modes(state, paths, sticky=None):
         sticky = CONFIG['sticky_block']
     failures = []
     for path in paths:
+        if not CONFIG['block_connect'] and targets.connect_path(path):
+            continue
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         except FileNotFoundError:
@@ -331,7 +331,8 @@ def block_jobs(state):
                 save_state(state)
         need_disable = not currently_disabled and not recorded.get('current_disabled')
         if domain in timed_out:
-            need_disable = not recorded.get('current_disabled')
+            # A saved "already disabled" flag is stale when launchctl itself timed out.
+            need_disable = not recorded.get('disabled', False) if recorded else True
         if need_disable:
             action = command('/bin/launchctl', 'disable', key)
             if action.returncode == 124:
@@ -398,11 +399,22 @@ def restore_jobs(state):
 
 def restore(state):
     failures = restore_modes(state) + restore_jobs(state)
-    ddm_failures = revert_ddm(state)
-    if ddm_failures:
-        return failures + ddm_failures
+    failures.extend(revert_ddm(state))
     failures.extend(sync_network('off', state, announce=False, use_shields=False))
     return failures
+
+
+def _clear_software_update_slot(record, state):
+    slot = record.get('softwareupdate') or {}
+    rewrote = bool(slot.get('rewrote_ever'))
+    record.pop('softwareupdate', None)
+    if rewrote:
+        record['softwareupdate_status'] = 'reverted'
+        save_state(state)
+        log('Software update declaration state reverted.')
+    else:
+        record.pop('softwareupdate_status', None)
+        save_state(state)
 
 
 def revert_ddm(state):
@@ -410,26 +422,66 @@ def revert_ddm(state):
     if not isinstance(record, dict):
         state['ddm'] = {}
         return []
+    if not record.get('softwareupdate'):
+        return []
     error = ddm.revert_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
     if error:
         record['softwareupdate_status'] = 'removal_failed'
         save_state(state)
         return [error]
-    had_bytes = bool((record.get('softwareupdate') or {}).get('content_b64'))
-    if record.get('softwareupdate'):
-        record.pop('softwareupdate', None)
-        record['softwareupdate_status'] = 'reverted'
-        save_state(state)
-        if had_bytes:
-            log('Software update declaration state reverted.')
+    _clear_software_update_slot(record, state)
     return []
 
 
-def declaration_blob():
-    kind, data, _info = ddm._read_regular(ddm.SOFTWARE_UPDATE_PATH)
-    if kind != 'ok' or not data:
-        return b''
-    return data
+def release_connect(state):
+    """Restore and forget Jamf Connect paths and jobs. Other shields stay tracked."""
+    failures = []
+    modes = state.setdefault('modes', {})
+    flags_map = state.setdefault('flags', {})
+    connect_modes = {path: mode for path, mode in list(modes.items()) if targets.connect_path(path)}
+    for path, mode in connect_modes.items():
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            log(f'Restore skipped; file no longer exists: {path}')
+            modes.pop(path, None)
+            flags_map.pop(path, None)
+            continue
+        except OSError as error:
+            failures.append(f'{path}: {error}')
+            continue
+        try:
+            if path in flags_map:
+                _set_flags(path, int(flags_map[path]))
+                log(f'Original flags restored: {path}')
+            os.fchmod(fd, int(mode))
+            log(f'Original permissions restored: {path}')
+        except OSError as error:
+            failures.append(f'{path}: {error}')
+            continue
+        finally:
+            os.close(fd)
+        modes.pop(path, None)
+        flags_map.pop(path, None)
+    jobs = state.setdefault('jobs', {})
+    connect_jobs = {
+        key: value for key, value in jobs.items()
+        if targets.connect_job(key.rsplit('/', 1)[-1])
+    }
+    failed = set()
+    if connect_jobs:
+        job_failures = restore_jobs({'jobs': connect_jobs})
+        failures.extend(job_failures)
+        for item in job_failures:
+            for key in connect_jobs:
+                if key in item:
+                    failed.add(key)
+        for key in connect_jobs:
+            if key not in failed:
+                jobs.pop(key, None)
+    if connect_modes or connect_jobs:
+        save_state(state)
+    return failures
 
 
 def sync_network(mode, state, announce=True, use_shields=True):
@@ -438,31 +490,26 @@ def sync_network(mode, state, announce=True, use_shields=True):
     if not isinstance(record, dict):
         record = {}
         state['ddm'] = record
+    revert_error = None
     if use_shields and not shields.get('ddm-update') and ddm._snapshot_saved(record.get('softwareupdate')):
         error = ddm.revert_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
         if error:
             record['softwareupdate_status'] = 'removal_failed'
-            shields['ddm-update'] = True
             save_state(state)
+            revert_error = error
         else:
-            had_bytes = bool((record.get('softwareupdate') or {}).get('content_b64'))
-            record.pop('softwareupdate', None)
-            record['softwareupdate_status'] = 'reverted'
-            save_state(state)
-            if had_bytes:
-                log('Software update declaration state reverted.')
-    blob = declaration_blob()
-    if blob == ddm.MARKER:
-        hosts, partial = [], bool(record.get('asset_partial'))
-    else:
-        hosts, partial = ddm.hosts_from_blob(blob)
-        record['asset_partial'] = bool(partial)
-        types = ddm.declaration_types(blob)
-        if types != list(record.get('types') or []):
-            record['types'] = types
-            if types:
-                log('DDM declaration types: ' + ', '.join(types[:12]))
+            _clear_software_update_slot(record, state)
+    if use_shields:
+        record['asset_partial'] = bool(shields.get('ddm-installs') or shields.get('ddm-assets'))
+        if shields.get('ddm-update'):
+            types = ddm.observed_types(ddm.SOFTWARE_UPDATE_PATH)
+            if types != list(record.get('types') or []):
+                record['types'] = types
+                if types:
+                    log('DDM declaration types: ' + ', '.join(types[:12]))
     net_mode = mode if mode in ('off', 'on', 'yeet') else 'off'
+    # Package and asset URLs are not in the software-update file. Do not deny from it.
+    hosts = []
     try:
         policy = network.load_policy(ROOT / 'network_policy.json')
         extra = ddm.extra_groups(policy, shields, hosts) if use_shields else []
@@ -471,22 +518,23 @@ def sync_network(mode, state, announce=True, use_shields=True):
             net_mode, ROOT, state, policy_path=ROOT / 'network_policy.json',
             kill_states=announce and active, extra_groups=extra)
     except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
-        return [str(error)]
+        messages = [str(error)]
+        if revert_error:
+            messages.append(revert_error)
+        return messages
     messages = [item for item in failures if item]
-    if use_shields and shields.get('ddm-update') and not messages:
-        ready = bool(network.read_status(ROOT).get('management_ready'))
-        if not ready:
+    if revert_error:
+        messages.append(revert_error)
+    if use_shields and shields.get('ddm-update') and not revert_error:
+        captured = ddm.capture_snapshot(record, ddm.SOFTWARE_UPDATE_PATH)
+        if captured == 'not_removed':
             record['softwareupdate_status'] = 'not_removed'
         else:
-            captured = ddm.capture_snapshot(record, ddm.SOFTWARE_UPDATE_PATH)
-            if captured == 'not_removed':
-                record['softwareupdate_status'] = 'not_removed'
-            else:
-                save_state(state)
-                status, rewrote = ddm.hold_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
-                record['softwareupdate_status'] = status
-                if rewrote:
-                    log('Software update declaration state removed.')
+            save_state(state)
+            status, rewrote = ddm.hold_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
+            record['softwareupdate_status'] = status
+            if rewrote:
+                log('Software update declaration state removed.')
     try:
         save_state(state)
     except OSError as error:
@@ -526,14 +574,15 @@ def should_sync_network(mode, applied, last_network, now, interval=60):
 
 
 def clear_sticky(state):
+    """Restore the recorded pre-install flags. Leave paths we never flagged alone."""
     failures = []
-    for path in state.get('modes', {}):
+    flags_map = state.get('flags') or {}
+    for path, flags in flags_map.items():
         try:
-            flags = int((state.get('flags') or {}).get(path, 0))
-            _set_flags(Path(path), flags & ~UF_IMMUTABLE)
+            _set_flags(Path(path), int(flags))
         except FileNotFoundError:
             continue
-        except OSError as error:
+        except (OSError, TypeError, ValueError) as error:
             failures.append(f'{path}: {error}')
     return failures
 
@@ -548,10 +597,29 @@ class BackgroundChecks(threading.Thread):
                                    BASE_EXECUTABLES | {Path(p) for p in state['modes']})
         self.last_network = 0.0
         self.applied_network = 'off'
+        # Own copy. refresh_shields() shares one previous value across both loops.
+        self.seen_shields = dict(shields.DEFAULTS)
 
     def paths(self):
         with self.path_lock:
             return list(self.cached_paths)
+
+    def apply_shield_edges(self, current):
+        """React to this thread's own last shield values, not the shared refresh previous."""
+        seen = self.seen_shields
+        if seen.get('jobs') and not current['jobs']:
+            for failure in restore_jobs(self.state):
+                log('PROTECTION ERROR: ' + failure)
+        elif current['jobs']:
+            for failure in block_jobs(self.state):
+                log('PROTECTION ERROR: ' + failure)
+        if seen.get('sticky') and not current['sticky']:
+            for failure in clear_sticky(self.state):
+                log('PROTECTION ERROR: ' + failure)
+        if not current.get('connect'):
+            for failure in release_connect(self.state):
+                log('PROTECTION ERROR: ' + failure)
+        self.seen_shields = dict(current)
 
     def run(self):
         while not self.stop_event.is_set():
@@ -562,16 +630,8 @@ class BackgroundChecks(threading.Thread):
                     tracked = {Path(p) for p in self.state['modes']}
                 with self.path_lock:
                     self.cached_paths = sorted(set(discovered) | tracked)
-                current, previous = refresh_shields()
-                if previous.get('jobs') and not current['jobs']:
-                    for failure in restore_jobs(self.state):
-                        log('PROTECTION ERROR: ' + failure)
-                elif current['jobs']:
-                    for failure in block_jobs(self.state):
-                        log('PROTECTION ERROR: ' + failure)
-                if previous.get('sticky') and not current['sticky']:
-                    for failure in clear_sticky(self.state):
-                        log('PROTECTION ERROR: ' + failure)
+                current, _previous = refresh_shields()
+                self.apply_shield_edges(current)
                 mode = current.get('network', 'off')
                 token = ddm.pf_token(mode, current, self.state.get('ddm'))
                 needed, announce = should_sync_network(
@@ -591,12 +651,14 @@ class BackgroundChecks(threading.Thread):
 
 
 def run_permission_checks(state, background, stop_event, supervise=lambda: None):
+    seen_permissions = shields.DEFAULTS['permissions']
     while not stop_event.is_set():
         started = time.monotonic()
-        current, previous = refresh_shields()
-        if previous.get('permissions') and not current['permissions']:
+        current, _previous = refresh_shields()
+        if seen_permissions and not current['permissions']:
             for failure in restore_modes(state):
                 log('PROTECTION ERROR: ' + failure)
+        seen_permissions = bool(current['permissions'])
         supervise()
         try:
             if current['permissions']:

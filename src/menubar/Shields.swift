@@ -42,7 +42,7 @@ struct ShieldState: Decodable, Equatable {
 
     static let coreOn = ShieldState(permissions: true, jobs: true, monitor: true,
                                     sticky: false, signatures: false, connect: false,
-                                    ddmChannel: false, ddmPush: false, ddmUpdate: false,
+                                    ddmChannel: false, ddmPush: false, ddmUpdate: true,
                                     ddmInstalls: false, ddmAssets: false, network: "off")
 
     enum CodingKeys: String, CodingKey {
@@ -80,7 +80,7 @@ struct ShieldState: Decodable, Equatable {
         connect = try container.decodeIfPresent(Bool.self, forKey: .connect) ?? false
         ddmChannel = try container.decodeIfPresent(Bool.self, forKey: .ddmChannel) ?? false
         ddmPush = try container.decodeIfPresent(Bool.self, forKey: .ddmPush) ?? false
-        ddmUpdate = try container.decodeIfPresent(Bool.self, forKey: .ddmUpdate) ?? false
+        ddmUpdate = try container.decodeIfPresent(Bool.self, forKey: .ddmUpdate) ?? true
         ddmInstalls = try container.decodeIfPresent(Bool.self, forKey: .ddmInstalls) ?? false
         ddmAssets = try container.decodeIfPresent(Bool.self, forKey: .ddmAssets) ?? false
         network = try container.decodeIfPresent(String.self, forKey: .network) ?? "off"
@@ -118,9 +118,7 @@ let shieldCatalog: [ShieldSpec] = [
     ShieldSpec(id: "sticky", title: "Sticky block", detail: "Resist a naive chmod +x", symbol: "pin.fill"),
     ShieldSpec(id: "signatures", title: "Signatures", detail: "Match Jamf code-signing IDs", symbol: "signature"),
     ShieldSpec(id: "connect", title: "Jamf Connect", detail: "Optional; can lock the login window", symbol: "person.crop.circle.fill"),
-    ShieldSpec(id: "ddm-channel", title: "Management channel", detail: "Pause new declarations and status reports", symbol: "antenna.radiowaves.left.and.right"),
-    ShieldSpec(id: "ddm-push", title: "Management wake", detail: "Block the push that wakes management", symbol: "bell.slash"),
-    ShieldSpec(id: "ddm-update", title: "Software update", detail: "Pause an enforced OS update and remove its applied state", symbol: "arrow.down.circle"),
-    ShieldSpec(id: "ddm-installs", title: "Installs", detail: "Pause blueprint app and package downloads. Installed apps stay.", symbol: "square.and.arrow.down"),
-    ShieldSpec(id: "ddm-assets", title: "Declaration assets", detail: "Pause credential and data asset downloads", symbol: "doc.badge.ellipsis"),
+    ShieldSpec(id: "ddm-update", title: "Software update", detail: "Remove a managed OS update record. Security updates and Apple’s servers stay open.", symbol: "arrow.down.circle"),
+    ShieldSpec(id: "ddm-installs", title: "Installs", detail: "No package host is visible, so downloads stay open. The App Store stays open.", symbol: "square.and.arrow.down"),
+    ShieldSpec(id: "ddm-assets", title: "Declaration assets", detail: "No asset host is visible, so downloads stay open.", symbol: "doc.badge.ellipsis"),
 ]

@@ -60,7 +60,7 @@ import plistlib, sys
 app=Path(sys.argv[1])
 info={'CFBundleIdentifier':'local.watchdog.menubar','CFBundleName':'WatchDog','CFBundleDisplayName':'WatchDog',
       'CFBundleExecutable':'WatchDog','CFBundlePackageType':'APPL','CFBundleShortVersionString':Path(sys.argv[2]).read_text().strip(),
-      'CFBundleVersion':'17','LSMinimumSystemVersion':'14.0','LSUIElement':True,
+      'CFBundleVersion':'19','LSMinimumSystemVersion':'14.0','LSUIElement':True,
       'CFBundleIconFile':'WatchDog','CFBundleIconName':'AppIcon',
       'NSHighResolutionCapable':True,'NSPrincipalClass':'NSApplication'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
