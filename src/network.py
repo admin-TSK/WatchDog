@@ -315,6 +315,7 @@ def read_status(root):
         'partial': [],
         'stale': [],
         'pf_enabled': False,
+        'management_ready': False,
     }
     try:
         data = json.loads(path.read_text())
@@ -629,18 +630,27 @@ def flush(root, state, *, run=None, pf_conf=None, pfctl=PFCTL, force=False):
 
 
 def sync(mode, root, state, *, run=None, resolve=None, discover=None, pf_conf=None,
-         pfctl=PFCTL, policy_path=None, enrollment_text=None, kill_states=True):
-    """Install or refresh the WatchDog PF anchor. mode is off, on, or yeet."""
+         pfctl=PFCTL, policy_path=None, enrollment_text=None, kill_states=True,
+         extra_groups=None):
+    """Install or refresh the WatchDog PF anchor. mode is off, on, or yeet.
+
+    extra_groups are DDM denies. They are added even when mode is off, and an
+    empty extra list never means every host.
+    """
     run = run or _subprocess_run
     resolve = resolve or resolve_host
     root = Path(root)
+    extra_groups = [group for group in (extra_groups or []) if group]
     if mode not in MODES:
         mode = 'off'
-    if mode == 'off':
+    if mode == 'off' and not extra_groups:
         return flush(root, state, run=run, pf_conf=pf_conf, pfctl=pfctl)
 
     policy = load_policy(policy_path or root / 'network_policy.json')
-    groups = groups_for_mode(policy, mode)
+    groups = [] if mode == 'off' else groups_for_mode(policy, mode)
+    groups.extend(extra_groups)
+    if not groups:
+        return flush(root, state, run=run, pf_conf=pf_conf, pfctl=pfctl)
     if discover:
         discovered = list(discover())
         endpoints = [(host, 443) for host in discovered]
@@ -655,7 +665,8 @@ def sync(mode, root, state, *, run=None, resolve=None, discover=None, pf_conf=No
                 discovered.append(host)
     destinations = collect_destinations(
         groups, discovered, resolve=resolve, endpoints=endpoints)
-    anchor = generate_anchor(mode, destinations)
+    anchor_mode = 'yeet' if any(group.get('id') == 'apns' for group in groups) else 'on'
+    anchor = generate_anchor(anchor_mode, destinations)
     anchor_path = root / 'pf.anchor'
     anchor_path.write_text(anchor)
     os.chmod(anchor_path, 0o600)
@@ -705,6 +716,7 @@ def sync(mode, root, state, *, run=None, resolve=None, discover=None, pf_conf=No
         'partial': destinations['partial'],
         'stale': destinations['stale'],
         'pf_enabled': bool(pf.get('enable_token') or pf.get('enabled_incremented')),
+        'management_ready': bool(destinations.get('mgmt_v4') or destinations.get('mgmt_v6')),
     }
     _write_json(root / 'network-status.json', status)
     return failures + warnings, commands

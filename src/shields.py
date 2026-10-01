@@ -9,7 +9,10 @@ import json
 import os
 from pathlib import Path
 
-KEYS = ('permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect')
+KEYS = (
+    'permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect',
+    'ddm-channel', 'ddm-push', 'ddm-update', 'ddm-installs', 'ddm-assets',
+)
 CORE = ('permissions', 'jobs', 'monitor')
 NETWORK_MODES = ('off', 'on', 'yeet')
 DEFAULTS = {
@@ -19,6 +22,11 @@ DEFAULTS = {
     'sticky': False,
     'signatures': False,
     'connect': False,
+    'ddm-channel': False,
+    'ddm-push': False,
+    'ddm-update': False,
+    'ddm-installs': False,
+    'ddm-assets': False,
     'network': 'off',
 }
 
@@ -85,6 +93,8 @@ def apply(current, request):
         return data
     key = request.get('id')
     if key in KEYS and 'enabled' in request:
+        if key == 'ddm-channel' and not request['enabled'] and (data.get('ddm-update') or data.get('ddm-installs')):
+            return data
         data[key] = bool(request['enabled'])
     elif key == 'network':
         if 'mode' in request:

@@ -187,6 +187,7 @@ def install():
             (REPO / 'src' / 'shields.py', 'shields.py', 0o600),
             (REPO / 'src' / 'network.py', 'network.py', 0o600),
             (REPO / 'src' / 'network_policy.json', 'network_policy.json', 0o600),
+            (REPO / 'src' / 'ddm.py', 'ddm.py', 0o600),
         ]:
             destination = ROOT / name
             shutil.copyfile(source, destination)
@@ -238,7 +239,7 @@ def install():
 
 INSTALL_FILES = (
     'watchdog', 'jamf-test-blocker', 'guard.py', 'processes.py', 'targets.py', 'shields.py',
-    'network.py', 'network_policy.json', 'network-status.json', 'pf.anchor',
+    'network.py', 'ddm.py', 'network_policy.json', 'network-status.json', 'pf.anchor',
     'run-guard', 'state.json', 'state.tmp', 'installation.json', 'shields.json',
 )
 

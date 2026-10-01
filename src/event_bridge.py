@@ -25,6 +25,7 @@ processes = _load('processes')
 targets = _load('targets')
 shields = _load('shields')
 network = _load('network')
+ddm = _load('ddm')
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = Path('/Library/Application Support/WatchDog Status')
@@ -78,12 +79,26 @@ def parse_event(line, identity, observed, historical=False):
         event.update(kind='recovery', code='session_scan_timeout')
     elif line.startswith('Shield ') and line.endswith('.'):
         parts = line[7:-1].rsplit(' ', 1)
-        if len(parts) != 2 or parts[0] not in {'permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect'} or parts[1] not in {'on', 'off'}:
+        if len(parts) != 2 or parts[0] not in {
+                'permissions', 'jobs', 'monitor', 'sticky', 'signatures', 'connect',
+                'ddm-channel', 'ddm-push', 'ddm-update', 'ddm-installs', 'ddm-assets',
+        } or parts[1] not in {'on', 'off'}:
             return None
         event.update(kind='shield', title=f'{parts[0].replace("_", " ").title()} shield {parts[1]}',
                      detail='Local control updated from Shields.')
     elif line in {'Network Off.', 'Network On.', 'Network Yeet.'}:
         event.update(kind='shield', title=line[:-1], detail='Outbound filter updated from Shields.')
+    elif line == 'Software update declaration state removed.':
+        event.update(kind='shield', title='Software update declaration removed',
+                     detail='Applied software update state was replaced. macOS may still store the declaration.')
+    elif line == 'Software update declaration state reverted.':
+        event.update(kind='shield', title='Software update declaration reverted',
+                     detail='The snapshotted software update state was written back.')
+    elif line.startswith('DDM declaration types: '):
+        detail = line.split(': ', 1)[1].strip()
+        if not re.fullmatch(r'[A-Za-z0-9., _-]+', detail):
+            return None
+        event.update(kind='shield', title='DDM declarations observed', detail=detail[:180])
     elif line == 'Network rules loaded.':
         event.update(kind='shield', title='Network rules loaded', detail='A loaded rule is not a confirmed deny.')
     elif line == 'Network resolution failed.':
@@ -280,9 +295,12 @@ def health(config):
     paths.update(Path(p) for p in state.get('modes', {}))
     permissions = all(execute_cleared(path) for path in paths)
     runtime = shields.load(Path(config['guard_root']) / 'shields.json')
+    net = network.read_status(config['guard_root'])
+    record = state.get('ddm') if isinstance(state.get('ddm'), dict) else {}
     return {'guard_running': running, 'monitor_running': monitor, 'execution_blocked': permissions,
             'executable_count': len(state.get('modes', {})), 'job_count': len(state.get('jobs', {})),
-            'shields': runtime, 'network': network.read_status(config['guard_root'])}
+            'shields': runtime, 'network': net,
+            'ddm': ddm.public_status(runtime, record, runtime.get('network', 'off'), net.get('management_ready'))}
 
 
 def heal_guard(config, now, last_attempt, minimum=60):

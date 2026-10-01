@@ -17,6 +17,20 @@ struct Snapshot: Decodable {
     let events: [Activity]
     let shields: ShieldState?
     let network: NetworkStatus?
+    let ddm: DdmStatus?
+}
+
+struct DdmStatus: Decodable, Equatable {
+    var tiles: [String: String]
+    var types: [String]
+
+    enum CodingKeys: String, CodingKey { case tiles, types }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tiles = try container.decodeIfPresent([String: String].self, forKey: .tiles) ?? [:]
+        types = try container.decodeIfPresent([String].self, forKey: .types) ?? []
+    }
 }
 
 @MainActor final class ActivityStore: ObservableObject {
@@ -49,6 +63,11 @@ struct Snapshot: Decodable {
         if let enabled = pending["sticky"] { value.sticky = enabled }
         if let enabled = pending["signatures"] { value.signatures = enabled }
         if let enabled = pending["connect"] { value.connect = enabled }
+        if let enabled = pending["ddm-channel"] { value.ddmChannel = enabled }
+        if let enabled = pending["ddm-push"] { value.ddmPush = enabled }
+        if let enabled = pending["ddm-update"] { value.ddmUpdate = enabled }
+        if let enabled = pending["ddm-installs"] { value.ddmInstalls = enabled }
+        if let enabled = pending["ddm-assets"] { value.ddmAssets = enabled }
         if let mode = pendingNetwork { value.network = mode }
         return value
     }
@@ -224,8 +243,15 @@ struct Snapshot: Decodable {
             launchAtLogin = enabled
         } catch { notificationNote = "Couldn’t update the login setting: \(error.localizedDescription)" }
     }
+    var channelForced: Bool {
+        snapshot?.ddm?.tiles["ddm-channel"] == "forced" || shields.ddmUpdate || shields.ddmInstalls
+    }
     func setShield(_ id: String, enabled: Bool) {
         if id == "connect" && enabled && !confirmConnect() { return }
+        if id == "ddm-push" && enabled && !confirmPush() { return }
+        if id == "ddm-update" && enabled && !confirmUpdate() { return }
+        if id == "ddm-installs" && enabled && !confirmInstalls() { return }
+        if id == "ddm-channel" && !enabled && channelForced { return }
         pending[id] = enabled
         if demo { onChange?(); return }
         let directory = feedURL.deletingLastPathComponent().appendingPathComponent("requests")
@@ -262,6 +288,33 @@ struct Snapshot: Decodable {
         alert.messageText = "Enable Jamf Connect blocking?"
         alert.informativeText = "If this Mac uses Jamf Connect at the login window, users can be locked out until WatchDog is uninstalled. WatchDog never rewrites authorizationdb."
         alert.addButton(withTitle: "Enable")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    private func confirmPush() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Block management wake?"
+        alert.informativeText = "This blocks Apple Push ranges. iMessage and other push services will break. Enrollment stays."
+        alert.addButton(withTitle: "Block")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    private func confirmUpdate() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Restrict software update?"
+        alert.informativeText = "Enforced update downloads pause, including updates you start yourself. WatchDog snapshots the applied state before removing it, and writes that snapshot back when you turn this off."
+        alert.addButton(withTitle: "Restrict")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    private func confirmInstalls() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Restrict blueprint installs?"
+        alert.informativeText = "App and package downloads pause, including one already in progress. Apps and packages already on disk stay installed."
+        alert.addButton(withTitle: "Restrict")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn
@@ -421,8 +474,24 @@ struct ActivityPanel: View {
             }.font(.system(size: 11)).padding(.horizontal, 18).padding(.vertical, 14)
         }.frame(width: panelSize.width, height: panelSize.height).background(Color(red: 0.065, green: 0.09, blue: 0.12)).environment(\.colorScheme, .dark)
     }
+    func ddmNote(_ status: String?) -> String? {
+        switch status {
+        case "forced": return "Forced while installs or software update are on."
+        case "restricted": return "Restricted. A loaded rule is not a confirmed deny."
+        case "removed": return "Applied software update state removed."
+        case "reverted": return "Snapshotted software update state restored."
+        case "covered": return "Already covered by Network."
+        case "partial": return "A destination could not be expressed."
+        case "not_removed": return "Not removed. No restorable snapshot."
+        case "removal_failed": return "Removal failed. The snapshot was kept."
+        default: return nil
+        }
+    }
     func shieldTile(_ spec: ShieldSpec) -> some View {
         let on = store.shields.enabled(spec.id)
+        let status = store.snapshot?.ddm?.tiles[spec.id]
+        let forced = spec.id == "ddm-channel" && store.channelForced
+        let note = (spec.id == "ddm-installs" && (status == "restricted" || status == nil)) ? spec.detail : (ddmNote(status) ?? spec.detail)
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center) {
                 Image(systemName: spec.symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(on ? accent : .secondary)
@@ -433,10 +502,11 @@ struct ActivityPanel: View {
                     get: { store.shields.enabled(spec.id) },
                     set: { store.setShield(spec.id, enabled: $0) }
                 )).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+                    .disabled(forced)
                     .accessibilityLabel(spec.title)
             }
             Text(spec.title).font(.system(size: 12, weight: .semibold))
-            Text(spec.detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Text(note).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)

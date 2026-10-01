@@ -82,6 +82,8 @@ def install():
     (PRIVATE / 'shields.py').chmod(0o600)
     shutil.copyfile(REPO / 'src/network.py', PRIVATE / 'network.py')
     (PRIVATE / 'network.py').chmod(0o600)
+    shutil.copyfile(REPO / 'src/ddm.py', PRIVATE / 'ddm.py')
+    (PRIVATE / 'ddm.py').chmod(0o600)
     python = str(Path(sys.executable).resolve())
     manage.write_runner(PRIVATE / 'run-events', 'event_bridge.py', manage.python_fallbacks(python))
     (PRIVATE / 'config.json').write_text(json.dumps(config))
@@ -166,7 +168,7 @@ def remove():
         if not known_app(APPLICATION): raise RuntimeError('Refusing to remove a different WatchDog application.')
         shutil.rmtree(APPLICATION)
     PLIST.unlink(missing_ok=True)
-    for name in ('event_bridge.py', 'processes.py', 'targets.py', 'shields.py', 'network.py', 'run-events', 'config.json', 'feed-state.json', 'feed-state.tmp'):
+    for name in ('event_bridge.py', 'processes.py', 'targets.py', 'shields.py', 'network.py', 'ddm.py', 'run-events', 'config.json', 'feed-state.json', 'feed-state.tmp'):
         (PRIVATE / name).unlink(missing_ok=True)
     if PRIVATE.exists(): PRIVATE.rmdir()
     requests = PUBLIC / 'requests'

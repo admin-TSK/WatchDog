@@ -16,6 +16,7 @@ processes = _load('processes')
 targets = _load('targets')
 shields = _load('shields')
 network = _load('network')
+ddm = _load('ddm')
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / 'state.json'
@@ -94,6 +95,12 @@ def refresh_shields():
                     log(f'Shield {key} {"on" if current[key] else "off"}.')
                     if key == 'connect' and current[key]:
                         log(targets.CONNECT_WARNING)
+                    if key == 'ddm-push' and current[key]:
+                        log(ddm.PUSH_WARNING)
+                    if key == 'ddm-update' and current[key]:
+                        log(ddm.UPDATE_WARNING)
+                    if key == 'ddm-installs' and current[key]:
+                        log(ddm.INSTALL_WARNING)
             if previous.get('network') != current.get('network'):
                 mode = current.get('network', 'off')
                 log(f'Network {mode.title()}.')
@@ -122,6 +129,9 @@ def load_state():
     state.setdefault('pf', {})
     if not isinstance(state['pf'], dict):
         state['pf'] = {}
+    state.setdefault('ddm', {})
+    if not isinstance(state['ddm'], dict):
+        state['ddm'] = {}
     state['version'] = STATE_VERSION
     return state
 
@@ -388,27 +398,120 @@ def restore_jobs(state):
 
 def restore(state):
     failures = restore_modes(state) + restore_jobs(state)
-    failures.extend(sync_network('off', state))
+    ddm_failures = revert_ddm(state)
+    if ddm_failures:
+        return failures + ddm_failures
+    failures.extend(sync_network('off', state, announce=False, use_shields=False))
     return failures
 
 
-def sync_network(mode, state, announce=True):
+def revert_ddm(state):
+    record = state.setdefault('ddm', {})
+    if not isinstance(record, dict):
+        state['ddm'] = {}
+        return []
+    error = ddm.revert_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
+    if error:
+        record['softwareupdate_status'] = 'removal_failed'
+        save_state(state)
+        return [error]
+    had_bytes = bool((record.get('softwareupdate') or {}).get('content_b64'))
+    if record.get('softwareupdate'):
+        record.pop('softwareupdate', None)
+        record['softwareupdate_status'] = 'reverted'
+        save_state(state)
+        if had_bytes:
+            log('Software update declaration state reverted.')
+    return []
+
+
+def declaration_blob():
+    kind, data, _info = ddm._read_regular(ddm.SOFTWARE_UPDATE_PATH)
+    if kind != 'ok' or not data:
+        return b''
+    return data
+
+
+def sync_network(mode, state, announce=True, use_shields=True):
+    shields = dict(SHIELDS) if use_shields else {'network': mode if mode in ('on', 'yeet') else 'off'}
+    record = state.setdefault('ddm', {})
+    if not isinstance(record, dict):
+        record = {}
+        state['ddm'] = record
+    if use_shields and not shields.get('ddm-update') and ddm._snapshot_saved(record.get('softwareupdate')):
+        error = ddm.revert_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
+        if error:
+            record['softwareupdate_status'] = 'removal_failed'
+            shields['ddm-update'] = True
+            save_state(state)
+        else:
+            had_bytes = bool((record.get('softwareupdate') or {}).get('content_b64'))
+            record.pop('softwareupdate', None)
+            record['softwareupdate_status'] = 'reverted'
+            save_state(state)
+            if had_bytes:
+                log('Software update declaration state reverted.')
+    blob = declaration_blob()
+    if blob == ddm.MARKER:
+        hosts, partial = [], bool(record.get('asset_partial'))
+    else:
+        hosts, partial = ddm.hosts_from_blob(blob)
+        record['asset_partial'] = bool(partial)
+        types = ddm.declaration_types(blob)
+        if types != list(record.get('types') or []):
+            record['types'] = types
+            if types:
+                log('DDM declaration types: ' + ', '.join(types[:12]))
+    net_mode = mode if mode in ('off', 'on', 'yeet') else 'off'
     try:
+        policy = network.load_policy(ROOT / 'network_policy.json')
+        extra = ddm.extra_groups(policy, shields, hosts) if use_shields else []
+        active = net_mode != 'off' or bool(extra)
         failures, _commands = network.sync(
-            mode, ROOT, state, policy_path=ROOT / 'network_policy.json',
-            kill_states=announce and mode != 'off')
+            net_mode, ROOT, state, policy_path=ROOT / 'network_policy.json',
+            kill_states=announce and active, extra_groups=extra)
     except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
         return [str(error)]
     messages = [item for item in failures if item]
+    if use_shields and shields.get('ddm-update') and not messages:
+        ready = bool(network.read_status(ROOT).get('management_ready'))
+        if not ready:
+            record['softwareupdate_status'] = 'not_removed'
+        else:
+            captured = ddm.capture_snapshot(record, ddm.SOFTWARE_UPDATE_PATH)
+            if captured == 'not_removed':
+                record['softwareupdate_status'] = 'not_removed'
+            else:
+                save_state(state)
+                status, rewrote = ddm.hold_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
+                record['softwareupdate_status'] = status
+                if rewrote:
+                    log('Software update declaration state removed.')
     try:
         save_state(state)
     except OSError as error:
         messages.append(f'Could not save network undo record: {error}')
-    if announce and mode in ('on', 'yeet') and not messages:
+    if announce and net_mode in ('on', 'yeet') and not messages:
         log('Network rules loaded.')
         if network.read_status(ROOT).get('stale'):
             log('Network resolution failed.')
     return messages
+
+
+def hold_ddm(state):
+    """Re-apply a software-update removal without replacing its snapshot."""
+    if not SHIELDS.get('ddm-update'):
+        return
+    record = state.setdefault('ddm', {})
+    if not isinstance(record, dict) or not ddm._snapshot_saved(record.get('softwareupdate')):
+        return
+    status, rewrote = ddm.hold_software_update(record, ddm.SOFTWARE_UPDATE_PATH)
+    if status == record.get('softwareupdate_status') and not rewrote:
+        return
+    record['softwareupdate_status'] = status
+    save_state(state)
+    if rewrote:
+        log('Software update declaration state removed.')
 
 
 def should_sync_network(mode, applied, last_network, now, interval=60):
@@ -470,13 +573,16 @@ class BackgroundChecks(threading.Thread):
                     for failure in clear_sticky(self.state):
                         log('PROTECTION ERROR: ' + failure)
                 mode = current.get('network', 'off')
+                token = ddm.pf_token(mode, current, self.state.get('ddm'))
                 needed, announce = should_sync_network(
-                    mode, self.applied_network, self.last_network, time.monotonic())
+                    token, self.applied_network, self.last_network, time.monotonic())
                 if needed:
                     for failure in sync_network(mode, self.state, announce=announce):
                         log('PROTECTION ERROR: ' + failure)
                     self.last_network = time.monotonic()
-                    self.applied_network = mode
+                    self.applied_network = token
+                else:
+                    hold_ddm(self.state)
             except subprocess.TimeoutExpired as error:
                 log('PROTECTION ERROR: Background status check timed out; permission checks continue independently. ' + repr(error))
             except Exception as error:
@@ -591,17 +697,17 @@ def main():
                 failures.extend(block_modes(state, executables()))
             if SHIELDS['jobs']:
                 failures.extend(block_jobs(state))
+            net_mode = SHIELDS.get('network', 'off')
             failures.extend(sync_network(
-                SHIELDS.get('network', 'off'), state,
-                announce=SHIELDS.get('network', 'off') != 'off'))
+                net_mode, state, announce=ddm.pf_token(net_mode, SHIELDS, state.get('ddm')) != 'off'))
             for failure in failures: log('PROTECTION ERROR: ' + failure)
             return bool(failures)
+        net_mode = SHIELDS.get('network', 'off')
         for failure in sync_network(
-                SHIELDS.get('network', 'off'), state,
-                announce=SHIELDS.get('network', 'off') != 'off'):
+                net_mode, state, announce=ddm.pf_token(net_mode, SHIELDS, state.get('ddm')) != 'off'):
             log('PROTECTION ERROR: ' + failure)
         background = BackgroundChecks(state, stop_event)
-        background.applied_network = SHIELDS.get('network', 'off')
+        background.applied_network = ddm.pf_token(net_mode, SHIELDS, state.get('ddm'))
         if background.applied_network != 'off':
             background.last_network = time.monotonic()
         background.start()

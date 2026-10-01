@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.0 — 2026-10-01
+
+- Added DDM shields for Jamf Blueprints: management channel, management wake, software update, installs, and declaration assets. All default off.
+- Installs restrict Managed App and Package downloads, including one already in progress. Apps and packages already on disk stay installed.
+- Software update snapshots `/var/db/softwareupdate/SoftwareUpdateDDMStatePersistence.plist` once, replaces that applied state, and writes the snapshot back when the shield turns off or WatchDog is uninstalled. Removal without a snapshot does not run.
+- Passcode, Safari, Math, disk management, and other declarations with no restorable file stay applied. The tile says not removed.
+- Enrollment and configuration profiles stay. A loaded rule is not a confirmed deny.
+
 - Network On also denies Apple enrollment/profile-fetch HTTPS. Yeet still uniquely blocks APNs. Installed profiles stay.
 - Discovered JSS URLs honor a non-443 port. Live Network On/Yeet also reads MDM ServerURL hosts from `profiles show` (host only; never logged).
 - PF state-kill is unicast-only and management-first. A management kill timeout is a warning, not a failed rule load. After reboot, an empty running anchor reloads `pf.conf`; a disabled filter is re-enabled even if a token was stored.
